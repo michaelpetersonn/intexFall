@@ -8,7 +8,7 @@
 
 <body class="bg-light">
   <div class="container py-4">
-    
+
     <!-- HEADER -->
     <header class="d-flex justify-content-between align-items-center mb-4">
       <div>
@@ -17,25 +17,25 @@
       </div>
 
       <div class="text-end">
-        <% if (!loggedInUserId) { %>
+        <% if (!loggedInLevel) { %>
           <!-- Public visitor -->
           <a class="btn btn-outline-secondary btn-sm" href="/login">
             User / Manager Login
           </a>
+
         <% } else { %>
-          <!-- Logged-in -->
+          <!-- Logged-in user or manager -->
           <div class="mb-1">
-            Logged in as 
-            <strong><%= loggedInLevel === 'M' ? 'Manager' : 'User' %></strong>
+            Logged in as <strong><%= loggedInLevel === 'M' ? 'Manager' : 'User' %></strong>
           </div>
           <a class="btn btn-outline-secondary btn-sm" href="/logout">
             Logout
-        </a>
+          </a>
         <% } %>
       </div>
     </header>
 
-    <!-- CARDS -->
+    <!-- DASHBOARD STATS -->
     <div class="row mb-4">
       <div class="col-md-3 mb-3">
         <div class="card text-center shadow-sm">
@@ -74,42 +74,50 @@
       </div>
     </div>
 
-    <!-- LINKS LIST -->
+    <!-- MANAGE DATA LINKS -->
     <h2 class="h5 mb-3">Manage data</h2>
-    <div class="list-group mb-4">
 
-      <a class="list-group-item list-group-item-action"
-         href="/participants?userId=<%= loggedInUserId %>&level=<%= loggedInLevel %>">
-        Participants
-      </a>
+    <% if (loggedInLevel === 'M') { %>
+      <!-- MANAGER VIEW -->
+      <div class="list-group mb-4">
+        <a class="list-group-item list-group-item-action"
+           href="/participants?userId=<%= loggedInUserId %>&level=<%= loggedInLevel %>">Participants</a>
 
-      <a class="list-group-item list-group-item-action"
-         href="/events?userId=<%= loggedInUserId %>&level=<%= loggedInLevel %>">
-        Events
-      </a>
+        <a class="list-group-item list-group-item-action"
+           href="/events?userId=<%= loggedInUserId %>&level=<%= loggedInLevel %>">Events</a>
 
-      <a class="list-group-item list-group-item-action"
-         href="/surveys?userId=<%= loggedInUserId %>&level=<%= loggedInLevel %>">
-        Surveys
-      </a>
+        <a class="list-group-item list-group-item-action"
+           href="/surveys?userId=<%= loggedInUserId %>&level=<%= loggedInLevel %>">Surveys</a>
 
-      <a class="list-group-item list-group-item-action"
-         href="/milestones?userId=<%= loggedInUserId %>&level=<%= loggedInLevel %>">
-        Milestones
-      </a>
+        <a class="list-group-item list-group-item-action"
+           href="/milestones?userId=<%= loggedInUserId %>&level=<%= loggedInLevel %>">Milestones</a>
 
-      <a class="list-group-item list-group-item-action"
-         href="/donations?userId=<%= loggedInUserId %>&level=<%= loggedInLevel %>">
-        Donations
-      </a>
+        <a class="list-group-item list-group-item-action"
+           href="/donations?userId=<%= loggedInUserId %>&level=<%= loggedInLevel %>">Donations</a>
+      </div>
 
-    </div>
+    <% } else if (loggedInLevel === 'U') { %>
+      <!-- USER VIEW (read-only) -->
+      <div class="list-group mb-4">
+        <a class="list-group-item list-group-item-action" href="/participants">Participants</a>
+        <a class="list-group-item list-group-item-action" href="/events">Events</a>
+        <a class="list-group-item list-group-item-action" href="/surveys">Surveys</a>
+        <a class="list-group-item list-group-item-action" href="/milestones">Milestones</a>
+        <a class="list-group-item list-group-item-action" href="/donations">Donations</a>
+      </div>
 
-    <!-- PUBLIC DONATIONS BUTTON -->
+    <% } else { %>
+      <!-- PUBLIC VISITOR VIEW -->
+      <p class="text-muted">
+        Log in to access participant, event, survey, milestone, and donation tools.
+      </p>
+    <% } %>
+
+    <!-- PUBLIC DONATION BUTTON -->
     <div class="mb-3">
       <a class="btn btn-primary" href="/donate">Public donation page</a>
     </div>
 
-  </div> <!-- container -->
+  </div>
 </body>
 </html>
