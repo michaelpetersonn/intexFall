@@ -1,12 +1,12 @@
-// db.js - Knex-based DB helper (EB + local)
+// db.js - Knex-based DB helper for EB + local
 require('dotenv').config();
+
 const knexLib = require('knex');
 
 const knex = knexLib({
   client: 'pg',
   connection: {
-    // Elastic Beanstalk uses RDS_HOSTNAME / RDS_USERNAME
-    // Fallbacks let you still use RDS_HOST / RDS_USER locally if you want.
+    // Elastic Beanstalk (coupled RDS) variables:
     host: process.env.RDS_HOSTNAME || process.env.RDS_HOST || 'localhost',
     port: Number(process.env.RDS_PORT) || 5432,
     user: process.env.RDS_USERNAME || process.env.RDS_USER || 'postgres',
@@ -16,10 +16,10 @@ const knex = knexLib({
   pool: { min: 2, max: 10 },
 });
 
-// Keep the same interface used in index.js
+// Keep the interface index.js expects: db.query(sql, params)
 function query(text, params) {
   if (params && params.length > 0) {
-    return knex.raw(text, params);  // SELECT ... returns { rows, rowCount, ... }
+    return knex.raw(text, params);
   } else {
     return knex.raw(text);
   }
