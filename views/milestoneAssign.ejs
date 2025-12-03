@@ -7,11 +7,15 @@
 </head>
 <body class="bg-light">
   <div class="container py-4">
+
+    <!-- Header -->
     <header class="d-flex justify-content-between align-items-center mb-3">
       <h1 class="h4 mb-0">Assign Milestone</h1>
       <div>
         <a href="/milestones?userId=<%= loggedInUserId %>&level=<%= loggedInLevel %>"
-           class="btn btn-outline-secondary btn-sm">Back to milestones</a>
+           class="btn btn-outline-secondary btn-sm">
+          Back to milestones
+        </a>
       </div>
     </header>
 
@@ -20,36 +24,38 @@
         <form method="POST"
               action="/milestones/assign?userId=<%= loggedInUserId %>&level=<%= loggedInLevel %>"
               class="row g-3">
+
+          <!-- Participant dropdown -->
           <div class="col-md-6">
             <label class="form-label">Participant</label>
-            <select name="participant_id" class="form-select" required>
+            <select name="participant_email" class="form-select" required>
               <option value="">Select participant...</option>
               <% participants.forEach(p => { %>
-                <option value="<%= p.id %>">
-                  <%= p.lastname %>, <%= p.firstname %> (ID: <%= p.id %>)
+                <option value="<%= p.participant_email %>">
+                  <%= p.participant_last_name %>, <%= p.participant_first_name %>
+                  (<%= p.participant_email %>)
                 </option>
               <% }) %>
             </select>
           </div>
 
+          <!-- Milestone title text input -->
           <div class="col-md-6">
-            <label class="form-label">Milestone</label>
-            <select name="milestone_id" class="form-select" required>
-              <option value="">Select milestone...</option>
-              <% milestones.forEach(m => { %>
-                <option value="<%= m.id %>">
-                  <%= m.name %>
-                </option>
-              <% }) %>
-            </select>
+            <label class="form-label">Milestone title</label>
+            <input name="milestone_title"
+                   class="form-control"
+                   placeholder="e.g., Completed Resume Workshop"
+                   required>
           </div>
 
           <div class="col-12">
             <button class="btn btn-dark" type="submit">Assign milestone</button>
           </div>
+
         </form>
       </div>
     </div>
+
   </div>
 </body>
 </html>

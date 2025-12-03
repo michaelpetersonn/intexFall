@@ -24,11 +24,11 @@ function isManager(level) {
 
 // Preserve user info when redirecting
 function redirectWithUser(res, path, userId, level) {
-  res.redirect(`${path}?userId=${userId}&level=${level}`);
+  res.redirect(`${path}?userId=${encodeURIComponent(userId)}&level=${encodeURIComponent(level)}`);
 }
 
-/*
 // ---------- Login ----------
+// users(participant_email, password, user_level)
 
 // GET /login – show login page
 app.get('/login', (req, res) => {
@@ -37,11 +37,11 @@ app.get('/login', (req, res) => {
 
 // POST /login – check users table
 app.post('/login', async (req, res) => {
-  const { username, password } = req.body;
+  const { username, password } = req.body; // username = participant_email
 
   try {
     const result = await db.query(
-      'SELECT id, username, level FROM users WHERE username = $1 AND password = $2',
+      'SELECT participant_email, user_level FROM users WHERE participant_email = $1 AND password = $2',
       [username, password]
     );
 
@@ -49,67 +49,33 @@ app.post('/login', async (req, res) => {
       return res.status(401).render('login', { error: 'Invalid username or password' });
     }
 
-    const user = result.rows[0];
-    redirectWithUser(res, '/landing', user.id, user.level);
+    const user = result.rows[0];  // { participant_email, user_level }
+    redirectWithUser(res, '/landing', user.participant_email, user.user_level);
   } catch (err) {
     console.error('Login error', err);
     res.status(500).render('login', { error: 'Server error' });
   }
-    // same helper we already had
-    res.redirect(`/landing?userId=${user.id}&level=${user.level}`);
-});
-*/
-
-
-
-
-// ---------- Login (hard-coded for now) ----------
-
-// GET /login – show login page
-app.get('/login', (req, res) => {
-  res.render('login', { error: null });
 });
 
-// POST /login – NO database, just hard-coded users
-app.post('/login', (req, res) => {
-  const { username, password } = req.body;
-
-  // Hard-coded accounts
-  // Manager: manager / manager123
-  // Common user: user / user123
-  let user = null;
-
-  if (username === 'manager' && password === 'manager123') {
-    user = { id: 1, level: 'M' };   // manager
-  } else if (username === 'user' && password === 'user123') {
-    user = { id: 2, level: 'U' };   // common user
-  }
-
-  if (!user) {
-    return res.status(401).render('login', { error: 'Invalid username or password' });
-  }
-
-  // same helper we already had
-  res.redirect(`/landing?userId=${user.id}&level=${user.level}`);
+// ---------- LOGOUT ----------
+app.get('/logout', (req, res) => {
+  // Just redirect them to landing WITHOUT userId/level
+  return res.redirect('/landing');
 });
-
-
-
-
 
 // ---------- Landing / dashboard ----------
 
 app.get('/landing', async (req, res) => {
   // If query params exist, use them; otherwise act like a normal user
-  const userId = req.query.userId || null;
-  const level = req.query.level || 'U';  // default to common user
+  const userId = req.query.userId || null;     // participant_email or null
+  const level = req.query.level || 'U';        // default to common user
 
   try {
     const [participants, events, donations, surveys] = await Promise.all([
       db.query('SELECT COUNT(*) AS count FROM participant'),
       db.query('SELECT COUNT(*) AS count FROM event'),
-      db.query('SELECT COALESCE(SUM(amount),0) AS total FROM participantDonation'),
-      db.query('SELECT COUNT(*) AS count FROM registrationAndSurvey'),
+      db.query('SELECT COALESCE(SUM(donation_amount),0) AS total FROM donation'),
+      db.query('SELECT COUNT(*) AS count FROM registration'),
     ]);
 
     res.render('landing', {
@@ -132,7 +98,9 @@ app.get('/landing', async (req, res) => {
   }
 });
 
+
 // ---------- Participants ----------
+// participant(participant_email, participant_first_name, participant_last_name, ...)
 
 // GET /participants – list & optional search
 app.get('/participants', async (req, res) => {
@@ -140,15 +108,24 @@ app.get('/participants', async (req, res) => {
   const level = req.query.level || 'U';
   const q = req.query.q;
 
-  let sql = 'SELECT id, firstname, lastname, email FROM participant';
+  let sql = `
+    SELECT participant_email,
+           participant_first_name,
+           participant_last_name
+    FROM participant
+  `;
   const params = [];
 
   if (q) {
-    sql += ' WHERE firstname ILIKE $1 OR lastname ILIKE $1 OR email ILIKE $1';
+    sql += `
+      WHERE participant_first_name ILIKE $1
+         OR participant_last_name ILIKE $1
+         OR participant_email ILIKE $1
+    `;
     params.push('%' + q + '%');
   }
 
-  sql += ' ORDER BY lastname, firstname';
+  sql += ' ORDER BY participant_last_name, participant_first_name';
 
   try {
     const result = await db.query(sql, params);
@@ -169,18 +146,19 @@ app.get('/participants', async (req, res) => {
   }
 });
 
-
 // Add participant – manager only
 app.post('/participants/add', requireLogin, async (req, res) => {
   const { userId, level } = req.query;
   if (!isManager(level)) return res.status(403).send('Only managers can add participants.');
 
-  const { firstname, lastname, email } = req.body;
+  const { participant_email, participant_first_name, participant_last_name } = req.body;
 
   try {
     await db.query(
-      'INSERT INTO participant (firstname, lastname, email) VALUES ($1,$2,$3)',
-      [firstname, lastname, email]
+      `INSERT INTO participant
+         (participant_email, participant_first_name, participant_last_name)
+       VALUES ($1,$2,$3)`,
+      [participant_email, participant_first_name, participant_last_name]
     );
     redirectWithUser(res, '/participants', userId, level);
   } catch (err) {
@@ -189,18 +167,21 @@ app.post('/participants/add', requireLogin, async (req, res) => {
   }
 });
 
-// Edit participant – manager only
-app.post('/participants/edit/:id', requireLogin, async (req, res) => {
+// Edit participant – manager only (email is treated as key, not edited)
+app.post('/participants/edit/:participant_email', requireLogin, async (req, res) => {
   const { userId, level } = req.query;
   if (!isManager(level)) return res.status(403).send('Only managers can edit participants.');
 
-  const { id } = req.params;
-  const { firstname, lastname, email } = req.body;
+  const { participant_email } = req.params;
+  const { participant_first_name, participant_last_name } = req.body;
 
   try {
     await db.query(
-      'UPDATE participant SET firstname=$1, lastname=$2, email=$3 WHERE id=$4',
-      [firstname, lastname, email, id]
+      `UPDATE participant
+         SET participant_first_name = $1,
+             participant_last_name  = $2
+       WHERE participant_email = $3`,
+      [participant_first_name, participant_last_name, participant_email]
     );
     redirectWithUser(res, '/participants', userId, level);
   } catch (err) {
@@ -210,14 +191,14 @@ app.post('/participants/edit/:id', requireLogin, async (req, res) => {
 });
 
 // Delete participant – manager only
-app.post('/participants/delete/:id', requireLogin, async (req, res) => {
+app.post('/participants/delete/:participant_email', requireLogin, async (req, res) => {
   const { userId, level } = req.query;
   if (!isManager(level)) return res.status(403).send('Only managers can delete participants.');
 
-  const { id } = req.params;
+  const { participant_email } = req.params;
 
   try {
-    await db.query('DELETE FROM participant WHERE id = $1', [id]);
+    await db.query('DELETE FROM participant WHERE participant_email = $1', [participant_email]);
     redirectWithUser(res, '/participants', userId, level);
   } catch (err) {
     console.error('Delete participant error', err);
@@ -225,21 +206,31 @@ app.post('/participants/delete/:id', requireLogin, async (req, res) => {
   }
 });
 
+
 // ---------- Events ----------
+// event(event_name, event_type, event_description, event_recurrence_pattern, event_default_capacity)
+
 app.get('/events', async (req, res) => {
   const userId = req.query.userId || null;
   const level = req.query.level || 'U';
   const q = req.query.q;
 
-  let sql = 'SELECT id, name, description FROM event';
+  let sql = `
+    SELECT event_name,
+           event_type,
+           event_description,
+           event_recurrence_pattern,
+           event_default_capacity
+    FROM event
+  `;
   const params = [];
 
   if (q) {
-    sql += ' WHERE name ILIKE $1 OR description ILIKE $1';
+    sql += ' WHERE event_name ILIKE $1 OR event_description ILIKE $1';
     params.push('%' + q + '%');
   }
 
-  sql += ' ORDER BY name';
+  sql += ' ORDER BY event_name';
 
   try {
     const events = await db.query(sql, params);
@@ -260,16 +251,31 @@ app.get('/events', async (req, res) => {
   }
 });
 
+// Add event – manager only (keep it simple: name + description; others optional)
 app.post('/events/add', requireLogin, async (req, res) => {
   const { userId, level } = req.query;
   if (!isManager(level)) return res.status(403).send('Only managers can add events.');
 
-  const { name, description } = req.body;
+  const {
+    event_name,
+    event_type,
+    event_description,
+    event_recurrence_pattern,
+    event_default_capacity
+  } = req.body;
 
   try {
     await db.query(
-      'INSERT INTO event (name, description) VALUES ($1,$2)',
-      [name, description]
+      `INSERT INTO event
+         (event_name, event_type, event_description, event_recurrence_pattern, event_default_capacity)
+       VALUES ($1, $2, $3, $4, $5)`,
+      [
+        event_name,
+        event_type || null,
+        event_description || null,
+        event_recurrence_pattern || null,
+        event_default_capacity || null
+      ]
     );
     redirectWithUser(res, '/events', userId, level);
   } catch (err) {
@@ -278,17 +284,34 @@ app.post('/events/add', requireLogin, async (req, res) => {
   }
 });
 
-app.post('/events/edit/:id', requireLogin, async (req, res) => {
+// Edit event – manager only (identified by event_name)
+app.post('/events/edit/:event_name', requireLogin, async (req, res) => {
   const { userId, level } = req.query;
   if (!isManager(level)) return res.status(403).send('Only managers can edit events.');
 
-  const { id } = req.params;
-  const { name, description } = req.body;
+  const { event_name } = req.params;
+  const {
+    event_type,
+    event_description,
+    event_recurrence_pattern,
+    event_default_capacity
+  } = req.body;
 
   try {
     await db.query(
-      'UPDATE event SET name=$1, description=$2 WHERE id=$3',
-      [name, description, id]
+      `UPDATE event
+         SET event_type = $1,
+             event_description = $2,
+             event_recurrence_pattern = $3,
+             event_default_capacity = $4
+       WHERE event_name = $5`,
+      [
+        event_type || null,
+        event_description || null,
+        event_recurrence_pattern || null,
+        event_default_capacity || null,
+        event_name
+      ]
     );
     redirectWithUser(res, '/events', userId, level);
   } catch (err) {
@@ -297,14 +320,15 @@ app.post('/events/edit/:id', requireLogin, async (req, res) => {
   }
 });
 
-app.post('/events/delete/:id', requireLogin, async (req, res) => {
+// Delete event – manager only
+app.post('/events/delete/:event_name', requireLogin, async (req, res) => {
   const { userId, level } = req.query;
   if (!isManager(level)) return res.status(403).send('Only managers can delete events.');
 
-  const { id } = req.params;
+  const { event_name } = req.params;
 
   try {
-    await db.query('DELETE FROM event WHERE id=$1', [id]);
+    await db.query('DELETE FROM event WHERE event_name = $1', [event_name]);
     redirectWithUser(res, '/events', userId, level);
   } catch (err) {
     console.error('Delete event error', err);
@@ -312,32 +336,36 @@ app.post('/events/delete/:id', requireLogin, async (req, res) => {
   }
 });
 
+
 // ---------- Surveys (view only – simple) ----------
+// registration(..., participant_email, event_name, survey_overall_score, survey_comments, ...)
 
 app.get('/surveys', async (req, res) => {
   const userId = req.query.userId || null;
   const level = req.query.level || 'U';
   const q = req.query.q;
 
-  // Base query
   let sql = `
-    SELECT id, participant_id, eventoccurrence_id, overallscore, comments
-    FROM registrationAndSurvey
+    SELECT registration_id,
+           participant_email,
+           event_name,
+           survey_overall_score,
+           survey_comments
+    FROM registration
   `;
   const params = [];
 
   if (q) {
-    // Search by id, participant_id, eventoccurrence_id, or comments text
     sql += `
-      WHERE CAST(id AS TEXT) ILIKE $1
-         OR CAST(participant_id AS TEXT) ILIKE $1
-         OR CAST(eventoccurrence_id AS TEXT) ILIKE $1
-         OR comments ILIKE $1
+      WHERE CAST(registration_id AS TEXT) ILIKE $1
+         OR participant_email ILIKE $1
+         OR event_name ILIKE $1
+         OR survey_comments ILIKE $1
     `;
     params.push('%' + q + '%');
   }
 
-  sql += ' ORDER BY id DESC';
+  sql += ' ORDER BY registration_id DESC';
 
   try {
     const surveys = await db.query(sql, params);
@@ -358,22 +386,40 @@ app.get('/surveys', async (req, res) => {
   }
 });
 
+
 // ---------- Milestones ----------
+// milestone(milestone_id, participant_email, user_milestone_number, milestone_title, milestone_date)
 
 app.get('/milestones', async (req, res) => {
   const userId = req.query.userId || null;
   const level = req.query.level || 'U';
   const q = req.query.q;
 
-  let sql = 'SELECT id, name, description FROM milestone';
+  let sql = `
+    SELECT m.milestone_id,
+           m.participant_email,
+           m.user_milestone_number,
+           m.milestone_title,
+           m.milestone_date,
+           p.participant_first_name,
+           p.participant_last_name
+    FROM milestone m
+    LEFT JOIN participant p
+      ON p.participant_email = m.participant_email
+  `;
   const params = [];
 
   if (q) {
-    sql += ' WHERE name ILIKE $1 OR description ILIKE $1';
+    sql += `
+      WHERE m.milestone_title ILIKE $1
+         OR m.participant_email ILIKE $1
+         OR p.participant_first_name ILIKE $1
+         OR p.participant_last_name ILIKE $1
+    `;
     params.push('%' + q + '%');
   }
 
-  sql += ' ORDER BY name';
+  sql += ' ORDER BY m.milestone_date DESC';
 
   try {
     const milestones = await db.query(sql, params);
@@ -401,17 +447,17 @@ app.get('/milestones/assign', requireLogin, async (req, res) => {
 
   try {
     const participants = await db.query(
-      'SELECT id, firstname, lastname FROM participant ORDER BY lastname'
-    );
-    const milestones = await db.query(
-      'SELECT id, name FROM milestone ORDER BY name'
+      `SELECT participant_email,
+              participant_first_name,
+              participant_last_name
+       FROM participant
+       ORDER BY participant_last_name, participant_first_name`
     );
 
     res.render('milestonesAssign', {
       loggedInUserId: userId,
       loggedInLevel: level,
       participants: participants.rows,
-      milestones: milestones.rows,
     });
   } catch (err) {
     console.error('Milestones assign error', err);
@@ -419,17 +465,19 @@ app.get('/milestones/assign', requireLogin, async (req, res) => {
   }
 });
 
-// POST assign – manager only
+// POST assign – manager only (create milestone row for a participant)
 app.post('/milestones/assign', requireLogin, async (req, res) => {
   const { userId, level } = req.query;
   if (!isManager(level)) return res.status(403).send('Only managers can assign milestones.');
 
-  const { participant_id, milestone_id } = req.body;
+  const { participant_email, milestone_title } = req.body;
 
   try {
     await db.query(
-      'INSERT INTO participantMilestone (participant_id, milestone_id, date_achieved) VALUES ($1,$2,CURRENT_DATE)',
-      [participant_id, milestone_id]
+      `INSERT INTO milestone
+         (participant_email, user_milestone_number, milestone_title, milestone_date)
+       VALUES ($1, $2, $3, CURRENT_DATE)`,
+      [participant_email, 1, milestone_title]
     );
     redirectWithUser(res, '/milestones', userId, level);
   } catch (err) {
@@ -438,7 +486,10 @@ app.post('/milestones/assign', requireLogin, async (req, res) => {
   }
 });
 
+
 // ----------- DONATIONS (internal list + public donation page) ------------
+// donation(donation_id, participant_email, user_donation_number, donation_date, donation_amount)
+
 
 // ---------- Internal Donations List (viewable by anyone, with search) ----------
 app.get('/donations', async (req, res) => {
@@ -447,22 +498,28 @@ app.get('/donations', async (req, res) => {
   const q = req.query.q;
 
   let sql = `
-    SELECT pd.id,
-           p.firstname,
-           p.lastname,
-           pd.amount,
-           pd.donationdate
-    FROM participantDonation pd
-    JOIN participant p ON p.id = pd.participant_id
+    SELECT d.donation_id,
+           d.participant_email,
+           d.donation_date,
+           d.donation_amount,
+           p.participant_first_name,
+           p.participant_last_name
+    FROM donation d
+    LEFT JOIN participant p
+      ON p.participant_email = d.participant_email
   `;
   const params = [];
 
   if (q) {
-    sql += ' WHERE p.firstname ILIKE $1 OR p.lastname ILIKE $1';
+    sql += `
+      WHERE p.participant_first_name ILIKE $1
+         OR p.participant_last_name ILIKE $1
+         OR d.participant_email ILIKE $1
+    `;
     params.push('%' + q + '%');
   }
 
-  sql += ' ORDER BY pd.donationdate DESC';
+  sql += ' ORDER BY d.donation_date DESC';
 
   try {
     const donationsResult = await db.query(sql, params);
@@ -471,7 +528,11 @@ app.get('/donations', async (req, res) => {
     let participants = [];
     if (level === 'M') {
       const pResult = await db.query(
-        'SELECT id, firstname, lastname FROM participant ORDER BY lastname, firstname'
+        `SELECT participant_email,
+                participant_first_name,
+                participant_last_name
+         FROM participant
+         ORDER BY participant_last_name, participant_first_name`
       );
       participants = pResult.rows;
     }
@@ -480,7 +541,7 @@ app.get('/donations', async (req, res) => {
       loggedInUserId: userId,
       loggedInLevel: level,
       donations: donationsResult.rows,
-      participants,      // 👈 new
+      participants,
       search: q || '',
     });
   } catch (err) {
@@ -489,7 +550,7 @@ app.get('/donations', async (req, res) => {
       loggedInUserId: userId,
       loggedInLevel: level,
       donations: [],
-      participants: [],   // 👈 new
+      participants: [],
       search: q || '',
     });
   }
@@ -500,12 +561,14 @@ app.post('/donations/add', requireLogin, async (req, res) => {
   const { userId, level } = req.query;
   if (!isManager(level)) return res.status(403).send('Only managers can add donations.');
 
-  const { participant_id, amount } = req.body;
+  const { participant_email, donation_amount } = req.body;
 
   try {
     await db.query(
-      'INSERT INTO participantDonation (participant_id, amount, donationdate) VALUES ($1, $2, CURRENT_DATE)',
-      [participant_id, amount]
+      `INSERT INTO donation
+         (participant_email, user_donation_number, donation_date, donation_amount)
+       VALUES ($1, $2, CURRENT_DATE, $3)`,
+      [participant_email, 1, donation_amount]
     );
     redirectWithUser(res, '/donations', userId, level);
   } catch (err) {
@@ -514,18 +577,18 @@ app.post('/donations/add', requireLogin, async (req, res) => {
   }
 });
 
-// Edit donation – manager only (edit amount only, date stays the same)
-app.post('/donations/edit/:id', requireLogin, async (req, res) => {
+// Edit donation – manager only (edit amount only)
+app.post('/donations/edit/:donation_id', requireLogin, async (req, res) => {
   const { userId, level } = req.query;
   if (!isManager(level)) return res.status(403).send('Only managers can edit donations.');
 
-  const { id } = req.params;
-  const { amount } = req.body;
+  const { donation_id } = req.params;
+  const { donation_amount } = req.body;
 
   try {
     await db.query(
-      'UPDATE participantDonation SET amount = $1 WHERE id = $2',
-      [amount, id]
+      'UPDATE donation SET donation_amount = $1 WHERE donation_id = $2',
+      [donation_amount, donation_id]
     );
     redirectWithUser(res, '/donations', userId, level);
   } catch (err) {
@@ -535,14 +598,14 @@ app.post('/donations/edit/:id', requireLogin, async (req, res) => {
 });
 
 // Delete donation – manager only
-app.post('/donations/delete/:id', requireLogin, async (req, res) => {
+app.post('/donations/delete/:donation_id', requireLogin, async (req, res) => {
   const { userId, level } = req.query;
   if (!isManager(level)) return res.status(403).send('Only managers can delete donations.');
 
-  const { id } = req.params;
+  const { donation_id } = req.params;
 
   try {
-    await db.query('DELETE FROM participantDonation WHERE id = $1', [id]);
+    await db.query('DELETE FROM donation WHERE donation_id = $1', [donation_id]);
     redirectWithUser(res, '/donations', userId, level);
   } catch (err) {
     console.error('Delete donation error', err);
@@ -565,16 +628,25 @@ app.post('/donate', async (req, res) => {
   const { name, email, amount } = req.body;
 
   try {
-    // 1) Insert participant (basic donor record)
-    const participant = await db.query(
-      'INSERT INTO participant (firstname, email) VALUES ($1, $2) RETURNING id',
-      [name, email]
-    );
+    // 1) Try to insert/ensure participant exists (very simple; ignore if fails)
+    try {
+      await db.query(
+        `INSERT INTO participant
+           (participant_email, participant_first_name)
+         VALUES ($1, $2)`,
+        [email, name]
+      );
+    } catch (innerErr) {
+      // Likely already exists; just log and continue
+      console.warn('Participant insert (public donate) warning:', innerErr.message);
+    }
 
-    // 2) Insert donation tied to the participant
+    // 2) Insert donation tied to the participant_email
     await db.query(
-      'INSERT INTO participantDonation (participant_id, amount, donationdate) VALUES ($1, $2, CURRENT_DATE)',
-      [participant.rows[0].id, amount]
+      `INSERT INTO donation
+         (participant_email, user_donation_number, donation_date, donation_amount)
+       VALUES ($1, $2, CURRENT_DATE, $3)`,
+      [email, 1, amount]
     );
 
     // 3) Show success message
@@ -591,6 +663,7 @@ app.post('/donate', async (req, res) => {
     });
   }
 });
+
 
 // ---------- Default route ----------
 app.get('/', (req, res) => {

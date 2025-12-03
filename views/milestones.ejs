@@ -7,6 +7,8 @@
 </head>
 <body class="bg-light">
   <div class="container py-4">
+
+    <!-- Header -->
     <header class="d-flex justify-content-between align-items-center mb-3">
       <h1 class="h4 mb-0">Milestones</h1>
       <div>
@@ -14,21 +16,28 @@
           Logged in as <strong><%= loggedInLevel === 'M' ? 'Manager' : 'User' %></strong>
         </small>
         <a href="/landing<%= loggedInUserId ? ('?userId=' + loggedInUserId + '&level=' + loggedInLevel) : '' %>"
-           class="btn btn-outline-secondary btn-sm">Back to dashboard</a>
+           class="btn btn-outline-secondary btn-sm">
+          Back to dashboard
+        </a>
       </div>
     </header>
 
+    <!-- Search -->
     <form class="row g-2 mb-3" method="GET" action="/milestones">
-  <input type="hidden" name="userId" value="<%= loggedInUserId %>">
-  <input type="hidden" name="level" value="<%= loggedInLevel %>">
-  <div class="col-sm-4">
-    <input class="form-control" name="q" placeholder="Search milestone name or description" value="<%= search %>">
-  </div>
-  <div class="col-sm-auto">
-    <button class="btn btn-outline-primary" type="submit">Search</button>
-  </div>
-</form>
+      <input type="hidden" name="userId" value="<%= loggedInUserId %>">
+      <input type="hidden" name="level" value="<%= loggedInLevel %>">
+      <div class="col-sm-4">
+        <input class="form-control"
+               name="q"
+               placeholder="Search by milestone or participant"
+               value="<%= search %>">
+      </div>
+      <div class="col-sm-auto">
+        <button class="btn btn-outline-primary" type="submit">Search</button>
+      </div>
+    </form>
 
+    <!-- Assign button for managers -->
     <% if (loggedInLevel === 'M') { %>
       <div class="mb-3">
         <a class="btn btn-dark"
@@ -38,22 +47,31 @@
       </div>
     <% } %>
 
+    <!-- Table -->
     <table class="table table-striped table-hover bg-white shadow-sm">
       <thead>
         <tr>
-          <th>Name</th>
-          <th>Description</th>
+          <th>Participant</th>
+          <th>Participant Email</th>
+          <th>Milestone Title</th>
+          <th>Date Achieved</th>
         </tr>
       </thead>
       <tbody>
         <% milestones.forEach(m => { %>
           <tr>
-            <td><%= m.name %></td>
-            <td><%= m.description %></td>
+            <td>
+              <%= m.participant_first_name || '' %>
+              <%= m.participant_last_name || '' %>
+            </td>
+            <td><%= m.participant_email %></td>
+            <td><%= m.milestone_title %></td>
+            <td><%= m.milestone_date ? new Date(m.milestone_date).toLocaleDateString() : '' %></td>
           </tr>
         <% }) %>
       </tbody>
     </table>
+
   </div>
 </body>
 </html>
