@@ -81,19 +81,28 @@ app.post('/login', async (req, res) => {
 });
 
 
-//temporary debuging test
 app.get('/dbtest', async (req, res) => {
   try {
-    const result = await db.query(
-      'SELECT participant_email FROM participant ORDER BY participant_email LIMIT 5'
-    );
-    const rows = result.rows || result[0]?.rows || [];
-    res.json(rows);
+    const info = await db.query('SELECT current_database(), current_user');
+    const tables = await db.query(`
+      SELECT table_schema, table_name
+      FROM information_schema.tables
+      WHERE table_schema = 'public'
+      ORDER BY table_name
+    `);
+
+    res.json({
+      currentDatabase: info.rows[0].current_database,
+      currentUser: info.rows[0].current_user,
+      publicTables: tables.rows.map(r => r.table_name),
+    });
   } catch (err) {
     console.error('DB TEST ERROR:', err);
     res.status(500).send(err.toString());
   }
 });
+
+
 
 
 
