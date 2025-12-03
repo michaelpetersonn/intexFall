@@ -1,4 +1,4 @@
-// db.js - Knex-based DB helper for EB + local
+// db.js - Knex-based DB helper for EB + local c
 require('dotenv').config();
 const knexLib = require('knex');
 
