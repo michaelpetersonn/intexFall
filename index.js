@@ -80,6 +80,32 @@ app.post('/login', async (req, res) => {
   }
 });
 
+
+app.get('/dbtest', async (req, res) => {
+  try {
+    const info = await db.query('SELECT current_database(), current_user');
+    const tables = await db.query(`
+      SELECT table_schema, table_name
+      FROM information_schema.tables
+      WHERE table_schema = 'public'
+      ORDER BY table_name
+    `);
+
+    res.json({
+      currentDatabase: info.rows[0].current_database,
+      currentUser: info.rows[0].current_user,
+      publicTables: tables.rows.map(r => r.table_name),
+    });
+  } catch (err) {
+    console.error('DB TEST ERROR:', err);
+    res.status(500).send(err.toString());
+  }
+});
+
+
+
+
+
 // ---------- LOGOUT ----------
 app.get('/logout', (req, res) => {
   // Just redirect them to landing WITHOUT userId/level

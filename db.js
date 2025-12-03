@@ -1,26 +1,36 @@
-// db.js - Knex-based DB helper
+// db.js - Knex-based DB helper for EB + local
 require('dotenv').config();
-const knex = require('knex')({
+const knexLib = require('knex');
+
+const isRds = !!process.env.RDS_HOSTNAME; // true on Elastic Beanstalk
+
+const knex = knexLib({
   client: 'pg',
   connection: {
-    host: process.env.RDS_HOST,
-    port: process.env.RDS_PORT,
-    user: process.env.RDS_USER,
-    password: process.env.RDS_PASSWORD,
-    database: process.env.RDS_DB_NAME,
+    host: process.env.RDS_HOSTNAME || process.env.RDS_HOST || 'localhost',
+    port: Number(process.env.RDS_PORT) || 5432,
+    user: process.env.RDS_USERNAME || process.env.RDS_USER || 'postgres',
+    password: process.env.RDS_PASSWORD || '',
+    database: process.env.RDS_DB_NAME || 'postgres',
+
+    // 👇 This is the important part
+    ssl: isRds
+      ? { rejectUnauthorized: false }   // use SSL on AWS/RDS
+      : false,                          // no SSL for local dev
   },
+  pool: { min: 2, max: 10 },
 });
 
-// This keeps the same interface as before: db.query(sql, params)
+// Keep the interface index.js expects: db.query(sql, params)
 function query(text, params) {
   if (params && params.length > 0) {
-    return knex.raw(text, params);   // returns { rows, rowCount, ... }
+    return knex.raw(text, params);
   } else {
-    return knex.raw(text);           // no params
+    return knex.raw(text);
   }
 }
 
 module.exports = {
-  knex,   // in case you ever want full Knex query builder
-  query,  // used everywhere in index.js
+  knex,
+  query,
 };
