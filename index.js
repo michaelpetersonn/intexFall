@@ -121,30 +121,255 @@ app.get('/landing', async (req, res) => {
   }
 });
 
+// ---------- SITE USERS (MANAGER ONLY)----------------
+app.get('/users', requireLogin, async (req, res) => {
+  const { userId, level } = req.query;
+  if (!isManager(level)) {
+    return res.status(403).send('Only managers can manage website users.');
+  }
+
+  const q = req.query.q;
+  let sql = `
+    SELECT participant_email, password, user_level
+    FROM users
+  `;
+  const params = [];
+
+  if (q) {
+    sql += ' WHERE participant_email ILIKE ? OR user_level ILIKE ?';
+    const like = '%' + q + '%';
+    params.push(like, like);
+  }
+
+  sql += ' ORDER BY participant_email';
+
+  try {
+    const result = await db.query(sql, params);
+
+    // 🔑 Normalize result to always be an array
+    let rows;
+    if (Array.isArray(result)) {
+      rows = result;
+    } else if (Array.isArray(result.rows)) {
+      rows = result.rows;
+    } else {
+      rows = []; // fallback
+    }
+
+    res.render('users', {
+      loggedInUserId: userId,
+      loggedInLevel: level,
+      users: rows,
+      search: q || '',
+      error: null,                         // always defined
+    });
+  } catch (err) {
+    console.error('Users list error', err);
+    res.render('users', {
+      loggedInUserId: userId,
+      loggedInLevel: level,
+      users: [],
+      search: q || '',
+      error: 'There was a problem loading users.',
+    });
+  }
+});
+
+// Add user – manager only
+app.post('/users/add', requireLogin, async (req, res) => {
+  const { userId, level } = req.query;
+  if (!isManager(level)) {
+    return res.status(403).send('Only managers can add website users.');
+  }
+
+  const { participant_email, password, user_level } = req.body;
+  console.log('ADD USER body:', req.body);
+
+  try {
+    // 1) Check if participant exists
+    const pResult = await db.query(
+      'SELECT participant_email FROM participant WHERE participant_email = ?',
+      [participant_email]
+    );
+
+    // 🔑 Normalize participants array safely
+    let participants;
+    if (Array.isArray(pResult)) {
+      participants = pResult;
+    } else if (Array.isArray(pResult.rows)) {
+      participants = pResult.rows;
+    } else {
+      participants = [];
+    }
+
+    console.log('PARTICIPANT CHECK:', participants);
+
+    if (participants.length === 0) {
+      console.log('*** NO PARTICIPANT FOUND FOR', participant_email, '***');
+
+      // Reload users list so the table still shows
+      const uResult = await db.query(
+        'SELECT participant_email, password, user_level FROM users ORDER BY participant_email'
+      );
+
+      let users;
+      if (Array.isArray(uResult)) {
+        users = uResult;
+      } else if (Array.isArray(uResult.rows)) {
+        users = uResult.rows;
+      } else {
+        users = [];
+      }
+
+      return res.render('users', {
+        loggedInUserId: userId,
+        loggedInLevel: level,
+        users,
+        search: '',
+        error: `No participant found with email: ${participant_email}. Create the participant first.`,
+      });
+    }
+
+    // 2) Participant exists → insert into users
+    await db.query(
+      `
+      INSERT INTO users (participant_email, password, user_level)
+      VALUES (?, ?, ?)
+      `,
+      [participant_email, password, user_level]
+    );
+
+    redirectWithUser(res, '/users', userId, level);
+  } catch (err) {
+    console.error('Add user error:', err);
+
+    // Try to re-render Users page with a generic error
+    try {
+      const uResult = await db.query(
+        'SELECT participant_email, password, user_level FROM users ORDER BY participant_email'
+      );
+
+      let users;
+      if (Array.isArray(uResult)) {
+        users = uResult;
+      } else if (Array.isArray(uResult.rows)) {
+        users = uResult.rows;
+      } else {
+        users = [];
+      }
+
+      return res.render('users', {
+        loggedInUserId: userId,
+        loggedInLevel: level,
+        users,
+        search: '',
+        error: 'There was a problem adding the user. Please try again.',
+      });
+    } catch (inner) {
+      console.error('Users reload after add error:', inner);
+      return redirectWithUser(res, '/users', userId, level);
+    }
+  }
+});
+
+// Edit user – manager only (email is the key)
+app.post('/users/edit/:participant_email', requireLogin, async (req, res) => {
+  const { userId, level } = req.query;
+  if (!isManager(level)) {
+    return res.status(403).send('Only managers can edit website users.');
+  }
+
+  const { participant_email } = req.params;
+  const { password, user_level } = req.body;
+  console.log('EDIT USER params:', participant_email);
+  console.log('EDIT USER body:', req.body);
+
+  try {
+    await db.query(
+      `
+      UPDATE users
+      SET password = ?, user_level = ?
+      WHERE participant_email = ?
+      `,
+      [password, user_level, participant_email]
+    );
+    redirectWithUser(res, '/users', userId, level);
+  } catch (err) {
+    console.error('Edit user error:', err);
+    redirectWithUser(res, '/users', userId, level);
+  }
+});
+
+// Delete user – manager only
+app.post('/users/delete/:participant_email', requireLogin, async (req, res) => {
+  const { userId, level } = req.query;
+  if (!isManager(level)) {
+    return res.status(403).send('Only managers can delete website users.');
+  }
+
+  const { participant_email } = req.params;
+  console.log('DELETE USER:', participant_email);
+
+  try {
+    await db.query(
+      'DELETE FROM users WHERE participant_email = ?',
+      [participant_email]
+    );
+    redirectWithUser(res, '/users', userId, level);
+  } catch (err) {
+    console.error('Delete user error:', err);
+    redirectWithUser(res, '/users', userId, level);
+  }
+});
+
 // ---------- Participants ----------
 // participant(participant_email, participant_first_name, participant_last_name, ...)
 
 // GET /participants – list & optional search
 app.get('/participants', async (req, res) => {
   const userId = req.query.userId || null;
-  const level = req.query.level || 'U';
+  const level = req.query.level || null; // null = not logged in
   const q = req.query.q;
 
-  let sql = `
-    SELECT participant_email,
-           participant_first_name,
-           participant_last_name
-    FROM participant
-  `;
-  const params = [];
+  // Choose columns based on role
+  let sql;
+  if (level === 'M') {
+    // Manager: see everything
+    sql = `
+      SELECT participant_email,
+             participant_first_name,
+             participant_last_name,
+             participant_dob,
+             participant_role,
+             participant_phone,
+             participant_city,
+             participant_state,
+             participant_zip,
+             participant_school_or_employer,
+             participant_field_of_interest,
+             total_donations
+      FROM participant
+    `;
+  } else {
+    // User (or not logged in): limited view
+    sql = `
+      SELECT participant_email,
+             participant_first_name,
+             participant_last_name,
+             participant_role,
+             participant_field_of_interest
+      FROM participant
+    `;
+  }
 
+  const params = [];
   if (q) {
     sql += `
       WHERE participant_first_name ILIKE ?
-         OR participant_last_name ILIKE ?
-         OR participant_email ILIKE ?
+         OR participant_last_name  ILIKE ?
+         OR participant_email      ILIKE ?
     `;
-    const like = '%' + q + '%';
+    const like = `%${q}%`;
     params.push(like, like, like);
   }
 
@@ -152,10 +377,12 @@ app.get('/participants', async (req, res) => {
 
   try {
     const result = await db.query(sql, params);
+    const rows = result.rows || result;
+
     res.render('participants', {
       loggedInUserId: userId,
       loggedInLevel: level,
-      participants: result.rows,
+      participants: rows,
       search: q || '',
     });
   } catch (err) {
@@ -172,21 +399,35 @@ app.get('/participants', async (req, res) => {
 // Add participant – manager only
 app.post('/participants/add', requireLogin, async (req, res) => {
   const { userId, level } = req.query;
-  if (!isManager(level))
-    return res.status(403).send('Only managers can add participants.');
+  if (!isManager(level)) return res.status(403).send('Only managers can add participants.');
 
   const {
     participant_email,
     participant_first_name,
     participant_last_name,
+    participant_role,
+    participant_field_of_interest,
   } = req.body;
 
   try {
     await db.query(
-      `INSERT INTO participant
-         (participant_email, participant_first_name, participant_last_name)
-       VALUES (?,?,?)`,
-      [participant_email, participant_first_name, participant_last_name]
+      `
+      INSERT INTO participant (
+        participant_email,
+        participant_first_name,
+        participant_last_name,
+        participant_role,
+        participant_field_of_interest
+      )
+      VALUES (?, ?, ?, ?, ?)
+      `,
+      [
+        participant_email,
+        participant_first_name,
+        participant_last_name,
+        participant_role || null,
+        participant_field_of_interest || null,
+      ]
     );
     redirectWithUser(res, '/participants', userId, level);
   } catch (err) {
@@ -195,56 +436,62 @@ app.post('/participants/add', requireLogin, async (req, res) => {
   }
 });
 
-// Edit participant – manager only (email is treated as key, not edited)
-app.post(
-  '/participants/edit/:participant_email',
-  requireLogin,
-  async (req, res) => {
-    const { userId, level } = req.query;
-    if (!isManager(level))
-      return res.status(403).send('Only managers can edit participants.');
+// Edit participant – manager only (email is key)
+app.post('/participants/edit/:participant_email', requireLogin, async (req, res) => {
+  const { userId, level } = req.query;
+  if (!isManager(level)) return res.status(403).send('Only managers can edit participants.');
 
-    const { participant_email } = req.params;
-    const { participant_first_name, participant_last_name } = req.body;
+  const { participant_email } = req.params;
+  const {
+    participant_first_name,
+    participant_last_name,
+    participant_role,
+    participant_field_of_interest,
+  } = req.body;
 
-    try {
-      await db.query(
-        `UPDATE participant
-           SET participant_first_name = ?,
-               participant_last_name  = ?
-         WHERE participant_email = ?`,
-        [participant_first_name, participant_last_name, participant_email]
-      );
-      redirectWithUser(res, '/participants', userId, level);
-    } catch (err) {
-      console.error('Edit participant error', err);
-      redirectWithUser(res, '/participants', userId, level);
-    }
+  try {
+    await db.query(
+      `
+      UPDATE participant
+      SET participant_first_name       = ?,
+          participant_last_name        = ?,
+          participant_role             = ?,
+          participant_field_of_interest = ?
+      WHERE participant_email          = ?
+      `,
+      [
+        participant_first_name,
+        participant_last_name,
+        participant_role || null,
+        participant_field_of_interest || null,
+        participant_email,
+      ]
+    );
+    redirectWithUser(res, '/participants', userId, level);
+  } catch (err) {
+    console.error('Edit participant error', err);
+    redirectWithUser(res, '/participants', userId, level);
   }
-);
+});
 
 // Delete participant – manager only
-app.post(
-  '/participants/delete/:participant_email',
-  requireLogin,
-  async (req, res) => {
-    const { userId, level } = req.query;
-    if (!isManager(level))
-      return res.status(403).send('Only managers can delete participants.');
+app.post('/participants/delete/:participant_email', requireLogin, async (req, res) => {
+  const { userId, level } = req.query;
+  if (!isManager(level)) return res.status(403).send('Only managers can delete participants.');
 
-    const { participant_email } = req.params;
+  const { participant_email } = req.params;
 
-    try {
-      await db.query('DELETE FROM participant WHERE participant_email = ?', [
-        participant_email,
-      ]);
-      redirectWithUser(res, '/participants', userId, level);
-    } catch (err) {
-      console.error('Delete participant error', err);
-      redirectWithUser(res, '/participants', userId, level);
-    }
+  try {
+    await db.query(
+      'DELETE FROM participant WHERE participant_email = ?',
+      [participant_email]
+    );
+    redirectWithUser(res, '/participants', userId, level);
+  } catch (err) {
+    console.error('Delete participant error', err);
+    redirectWithUser(res, '/participants', userId, level);
   }
-);
+});
 
 // ---------- Events ----------
 // event(event_name, event_type, event_description, event_recurrence_pattern, event_default_capacity)

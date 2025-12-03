@@ -7,61 +7,75 @@
 </head>
 <body class="bg-light">
   <div class="container py-4">
-
-    <!-- Header -->
     <header class="d-flex justify-content-between align-items-center mb-3">
       <h1 class="h4 mb-0">Participants</h1>
       <div>
         <small class="me-3">
-          Logged in as <strong><%= loggedInLevel === 'M' ? 'Manager' : 'User' %></strong>
+          Logged in as
+          <strong>
+            <%= loggedInLevel === 'M'
+                  ? 'Manager'
+                  : (loggedInLevel === 'U' ? 'User' : 'Visitor') %>
+          </strong>
         </small>
-        <a href="/landing<%= loggedInUserId ? ('?userId=' + loggedInUserId + '&level=' + loggedInLevel) : '' %>"
+        <a href="/landing?userId=<%= loggedInUserId %>&level=<%= loggedInLevel %>"
            class="btn btn-outline-secondary btn-sm">
           Back to dashboard
         </a>
       </div>
     </header>
 
+    <% const isManager = (loggedInLevel === 'M'); %>
+
     <!-- Search -->
     <form class="row g-2 mb-3" method="GET" action="/participants">
       <input type="hidden" name="userId" value="<%= loggedInUserId %>">
       <input type="hidden" name="level" value="<%= loggedInLevel %>">
       <div class="col-sm-4">
-        <input class="form-control" name="q" placeholder="Search name or email" value="<%= search %>">
+        <input class="form-control" name="q"
+               placeholder="Search name or email"
+               value="<%= search %>">
       </div>
       <div class="col-sm-auto">
         <button class="btn btn-outline-primary" type="submit">Search</button>
       </div>
     </form>
 
-    <!-- Add participant (manager only) -->
-    <% if (loggedInLevel === 'M') { %>
+    <!-- Manager-only: Add participant -->
+    <% if (isManager) { %>
       <div class="card mb-4">
         <div class="card-header">Add participant</div>
         <div class="card-body">
           <form method="POST"
                 action="/participants/add?userId=<%= loggedInUserId %>&level=<%= loggedInLevel %>"
                 class="row g-2">
+
             <div class="col-md-3">
               <input name="participant_first_name"
                      class="form-control"
-                     placeholder="First name"
-                     required>
+                     placeholder="First name" required>
             </div>
+
             <div class="col-md-3">
               <input name="participant_last_name"
                      class="form-control"
-                     placeholder="Last name"
-                     required>
+                     placeholder="Last name" required>
             </div>
-            <div class="col-md-4">
+
+            <div class="col-md-3">
               <input name="participant_email"
                      type="email"
                      class="form-control"
-                     placeholder="Email"
-                     required>
+                     placeholder="Email" required>
             </div>
-            <div class="col-md-2 d-grid">
+
+            <div class="col-md-2">
+              <input name="participant_role"
+                     class="form-control"
+                     placeholder="Role (e.g. Student)">
+            </div>
+
+            <div class="col-md-1 d-grid">
               <button class="btn btn-dark" type="submit">Add</button>
             </div>
           </form>
@@ -69,58 +83,126 @@
       </div>
     <% } %>
 
-    <!-- Table -->
-    <table class="table table-striped table-hover bg-white shadow-sm">
-      <thead>
-        <tr>
-          <th>Name</th>
-          <th>Email</th>
-          <% if (loggedInLevel === 'M') { %>
-            <th style="width: 260px;">Actions</th>
-          <% } %>
-        </tr>
-      </thead>
-      <tbody>
-        <% participants.forEach(p => { %>
+    <!-- TABLES -->
+    <% if (isManager) { %>
+      <!-- Manager view: all participant details + milestones + edit/delete -->
+      <table class="table table-striped table-hover bg-white shadow-sm">
+        <thead>
           <tr>
-            <td><%= p.participant_first_name %> <%= p.participant_last_name %></td>
-            <td><%= p.participant_email %></td>
-
-            <% if (loggedInLevel === 'M') { %>
+            <th>Name</th>
+            <th>Email</th>
+            <th>Role</th>
+            <th>Field of Interest</th>
+            <th>City</th>
+            <th>State</th>
+            <th>Phone</th>
+            <th>DOB</th>
+            <th>School / Employer</th>
+            <th>Zip</th>
+            <th>Total Donations</th>
+            <th>Milestones</th>
+            <th style="width: 260px;">Actions</th>
+          </tr>
+        </thead>
+        <tbody>
+          <% participants.forEach(p => { %>
+            <tr>
               <td>
-                <!-- Edit first/last name -->
+                <%= p.participant_first_name %> <%= p.participant_last_name %>
+              </td>
+              <td><%= p.participant_email %></td>
+              <td><%= p.participant_role || '' %></td>
+              <td><%= p.participant_field_of_interest || '' %></td>
+              <td><%= p.participant_city || '' %></td>
+              <td><%= p.participant_state || '' %></td>
+              <td><%= p.participant_phone || '' %></td>
+              <td><%= p.participant_dob || '' %></td>
+              <td><%= p.participant_school_or_employer || '' %></td>
+              <td><%= p.participant_zip || '' %></td>
+              <td><%= p.total_donations || '' %></td>
+
+              <td>
+                <!-- Milestones button: goes to milestones page -->
+                <a class="btn btn-sm btn-outline-secondary"
+                   href="/milestones?userId=<%= loggedInUserId %>&level=<%= loggedInLevel %>">
+                  Edit milestones
+                </a>
+              </td>
+
+              <td>
+                <!-- Inline edit: basic fields -->
                 <form method="POST"
-                      action="/participants/edit/<%= encodeURIComponent(p.participant_email) %>?userId=<%= loggedInUserId %>&level=<%= loggedInLevel %>"
+                      action="/participants/edit/<%= p.participant_email %>?userId=<%= loggedInUserId %>&level=<%= loggedInLevel %>"
                       class="row g-1 mb-1">
-                  <div class="col-md-5">
+                  <div class="col-md-3">
                     <input name="participant_first_name"
                            class="form-control form-control-sm"
-                           value="<%= p.participant_first_name %>">
+                           value="<%= p.participant_first_name %>" required>
                   </div>
-                  <div class="col-md-5">
+                  <div class="col-md-3">
                     <input name="participant_last_name"
                            class="form-control form-control-sm"
-                           value="<%= p.participant_last_name %>">
+                           value="<%= p.participant_last_name %>" required>
                   </div>
-                  <div class="col-md-2 d-grid mt-1 mt-md-0">
+                  <div class="col-md-3">
+                    <input name="participant_role"
+                           class="form-control form-control-sm"
+                           value="<%= p.participant_role || '' %>">
+                  </div>
+                  <div class="col-md-3">
+                    <input name="participant_field_of_interest"
+                           class="form-control form-control-sm"
+                           value="<%= p.participant_field_of_interest || '' %>">
+                  </div>
+                  <div class="col-12 mt-1">
                     <button class="btn btn-sm btn-primary" type="submit">Save</button>
                   </div>
                 </form>
 
                 <!-- Delete participant -->
                 <form method="POST"
-                      action="/participants/delete/<%= encodeURIComponent(p.participant_email) %>?userId=<%= loggedInUserId %>&level=<%= loggedInLevel %>"
-                      onsubmit="return confirm('Delete this participant?');"
+                      action="/participants/delete/<%= p.participant_email %>?userId=<%= loggedInUserId %>&level=<%= loggedInLevel %>"
+                      onsubmit="return confirm('Delete this participant? This may affect related data.');"
                       class="d-inline">
                   <button class="btn btn-sm btn-outline-danger" type="submit">Delete</button>
                 </form>
               </td>
-            <% } %>
-
+            </tr>
+          <% }) %>
+        </tbody>
+      </table>
+    <% } else { %>
+      <!-- User view: limited columns + milestones button, read-only -->
+      <table class="table table-striped table-hover bg-white shadow-sm">
+        <thead>
+          <tr>
+            <th>Name</th>
+            <th>Email</th>
+            <th>Role</th>
+            <th>Field of Interest</th>
+            <th>Milestones</th>
           </tr>
-        <% }) %>
-      </tbody>
-    </table>
+        </thead>
+        <tbody>
+          <% participants.forEach(p => { %>
+            <tr>
+              <td>
+                <%= p.participant_first_name %> <%= p.participant_last_name %>
+              </td>
+              <td><%= p.participant_email %></td>
+              <td><%= p.participant_role || '' %></td>
+              <td><%= p.participant_field_of_interest || '' %></td>
+              <td>
+                <a class="btn btn-sm btn-outline-secondary"
+                   href="/milestones?userId=<%= loggedInUserId %>&level=<%= loggedInLevel %>">
+                  Edit milestones
+                </a>
+              </td>
+            </tr>
+          <% }) %>
+        </tbody>
+      </table>
+    <% } %>
 
   </div>
 </body>
