@@ -80,6 +80,23 @@ app.post('/login', async (req, res) => {
   }
 });
 
+
+//temporary debuging test
+app.get('/dbtest', async (req, res) => {
+  try {
+    const result = await db.query(
+      'SELECT participant_email FROM participant ORDER BY participant_email LIMIT 5'
+    );
+    const rows = result.rows || result[0]?.rows || [];
+    res.json(rows);
+  } catch (err) {
+    console.error('DB TEST ERROR:', err);
+    res.status(500).send(err.toString());
+  }
+});
+
+
+
 // ---------- LOGOUT ----------
 app.get('/logout', (req, res) => {
   // Just redirect them to landing WITHOUT userId/level
