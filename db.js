@@ -9,8 +9,8 @@ const knex = knexLib({
   connection: {
     host: process.env.RDS_HOSTNAME || process.env.RDS_HOST || 'localhost',
     port: Number(process.env.RDS_PORT) || 5432,
-    user: process.env.RDS_USERNAME || process.env.RDS_USER || 'postgres',
-    password: process.env.RDS_PASSWORD || '',
+    user: process.env.RDS_USERNAME || process.env.RDS_USER || 'FallIntex',
+    password: process.env.RDS_PASSWORD || 'MichaelMichaelCarson',
     database: process.env.RDS_DB_NAME || 'postgres',
 
     // 👇 This is the important part

@@ -3,18 +3,30 @@ require('dotenv').config();
 const express = require('express');
 const db = require('./db');
 
+const session = require('express-session');
+
 const app = express();
 app.set('view engine', 'ejs');
 app.set('views', __dirname + '/views');
 app.use(express.urlencoded({ extended: true }));
+app.use(
+  session({
+    secret: process.env.SESSION_SECRET || 'ella-rises-secret',
+    resave: false,
+    saveUninitialized: true,
+  })
+);
 
 // ---------- Helpers ----------
 function requireLogin(req, res, next) {
-  // Keep login info in the query string (like the IS403 example)
-  const { userId, level } = req.query;
+  // Accept credentials from query string or session
+  const userId = req.query.userId || req.session.userId;
+  const level = req.query.level || req.session.level;
   if (!userId || !level) {
     return res.redirect('/login');
   }
+  req.userId = userId;
+  req.level = level;
   next();
 }
 
@@ -71,6 +83,10 @@ app.post('/login', async (req, res) => {
       user.userrole ||
       'U';
 
+    // Persist in session
+    req.session.userId = userId;
+    req.session.level = level;
+
     res.redirect(
       `/landing?userId=${encodeURIComponent(userId)}&level=${level}`
     );
@@ -108,6 +124,7 @@ app.get('/dbtest', async (req, res) => {
 
 // ---------- LOGOUT ----------
 app.get('/logout', (req, res) => {
+  req.session.destroy(() => {});
   // Just redirect them to landing WITHOUT userId/level
   return res.redirect('/landing');
 });
@@ -115,9 +132,9 @@ app.get('/logout', (req, res) => {
 // ---------- Landing / dashboard ----------
 
 app.get('/landing', async (req, res) => {
-  // If query params exist, use them; otherwise treat as NOT logged in
-  const userId = req.query.userId || null;
-  const level = req.query.level || null;
+  // Prefer query params; fall back to session
+  const userId = req.query.userId || req.session.userId || null;
+  const level = req.query.level || req.session.level || null;
 
   try {
     const [participants, events, donations, surveys] = await Promise.all([
@@ -522,49 +539,126 @@ app.post('/participants/delete/:participant_email', requireLogin, async (req, re
 // ---------- Events ----------
 // event(event_name, event_type, event_description, event_recurrence_pattern, event_default_capacity)
 
+// ---------- Events ----------
+// event(event_name, event_type, event_description, event_recurrence_pattern, event_default_capacity)
+// event_instance(event_instance_id, event_name, event_datetime_start, event_datetime_end,
+//                event_location, event_capacity, event_registration_deadline)
+
+// List events + event instances (users see future; managers see all)
 app.get('/events', async (req, res) => {
-  const userId = req.query.userId || null;
-  const level = req.query.level || 'U';
+  const userId = req.query.userId || req.session.userId || null;
+  const level = req.query.level || req.session.level || 'U';
   const q = req.query.q;
-
-  let sql = `
-    SELECT event_name,
-           event_type,
-           event_description,
-           event_recurrence_pattern,
-           event_default_capacity
-    FROM event
-  `;
-  const params = [];
-
-  if (q) {
-    sql += ' WHERE event_name ILIKE ? OR event_description ILIKE ?';
-    const like = '%' + q + '%';
-    params.push(like, like);
-  }
-
-  sql += ' ORDER BY event_name';
+  const userIsManager = isManager(level);
 
   try {
-    const events = await db.query(sql, params);
+    let eventInstances = [];
+    let events = [];
+    let myRegistrations = [];
+    let myInstanceIds = [];
+
+    if (userIsManager) {
+      // Manager: show all instances (past + future) and event definitions
+      let instanceSql = `
+        SELECT ei.event_instance_id,
+               ei.event_name,
+               e.event_type,
+               e.event_description,
+               ei.event_datetime_start,
+               ei.event_datetime_end,
+               ei.event_location,
+               ei.event_capacity,
+               ei.event_registration_deadline
+        FROM event_instance ei
+        JOIN event e ON e.event_name = ei.event_name
+      `;
+      const instanceParams = [];
+      const whereParts = [];
+
+      if (q) {
+        whereParts.push(`
+          (
+            ei.event_name ILIKE ?
+            OR e.event_type ILIKE ?
+            OR e.event_description ILIKE ?
+            OR ei.event_location ILIKE ?
+          )
+        `);
+        const like = '%' + q + '%';
+        instanceParams.push(like, like, like, like);
+      }
+
+      if (whereParts.length > 0) {
+        instanceSql += ' WHERE ' + whereParts.join(' AND ');
+      }
+
+      instanceSql += ' ORDER BY ei.event_datetime_start';
+
+      const eventsSql = `
+        SELECT event_name,
+               event_type,
+               event_description,
+               event_recurrence_pattern,
+               event_default_capacity
+        FROM event
+        ORDER BY event_name
+      `;
+
+      const [instancesResult, eventsResult] = await Promise.all([
+        db.query(instanceSql, instanceParams),
+        db.query(eventsSql, []),
+      ]);
+
+      eventInstances = instancesResult.rows || instancesResult;
+      events = eventsResult.rows || eventsResult;
+    } else {
+      // User: show only their past events
+      if (userId) {
+        const myRegsSql = `
+          SELECT r.event_instance_id,
+                 ei.event_name,
+                 e.event_type,
+                 e.event_description,
+                 ei.event_datetime_start,
+                 ei.event_datetime_end,
+                 ei.event_location
+          FROM registration r
+          JOIN event_instance ei ON ei.event_instance_id = r.event_instance_id
+          JOIN event e ON e.event_name = ei.event_name
+          WHERE r.participant_email = ?
+            AND ei.event_datetime_start < NOW()
+          ORDER BY ei.event_datetime_start DESC
+        `;
+        const myRegsResult = await db.query(myRegsSql, [userId]);
+        myRegistrations = myRegsResult.rows || myRegsResult;
+        myInstanceIds = myRegistrations.map(r => r.event_instance_id);
+      }
+    }
+
     res.render('events', {
       loggedInUserId: userId,
       loggedInLevel: level,
-      events: events.rows,
+      eventInstances,
+      events,
       search: q || '',
+      myRegistrations,
+      myInstanceIds,
     });
   } catch (err) {
     console.error('Events error', err);
     res.render('events', {
       loggedInUserId: userId,
       loggedInLevel: level,
+      eventInstances: [],
       events: [],
       search: q || '',
+      myRegistrations: [],
+      myInstanceIds: [],
     });
   }
 });
 
-// Add event – manager only
+// Add event – manager only (parent "event" table)
 app.post('/events/add', requireLogin, async (req, res) => {
   const { userId, level } = req.query;
   if (!isManager(level))
@@ -598,7 +692,7 @@ app.post('/events/add', requireLogin, async (req, res) => {
   }
 });
 
-// Edit event – manager only (identified by event_name)
+// Edit event – manager only (parent "event" table)
 app.post('/events/edit/:event_name', requireLogin, async (req, res) => {
   const { userId, level } = req.query;
   if (!isManager(level))
@@ -635,7 +729,7 @@ app.post('/events/edit/:event_name', requireLogin, async (req, res) => {
   }
 });
 
-// Delete event – manager only
+// Delete event – manager only (parent "event" table)
 app.post('/events/delete/:event_name', requireLogin, async (req, res) => {
   const { userId, level } = req.query;
   if (!isManager(level))
@@ -651,6 +745,558 @@ app.post('/events/delete/:event_name', requireLogin, async (req, res) => {
     redirectWithUser(res, '/events', userId, level);
   }
 });
+
+// ---------- Events ----------
+// event(event_name, event_type, event_description, event_recurrence_pattern, event_default_capacity)
+// event_instance(event_instance_id, event_name, event_datetime_start, event_datetime_end,
+//                event_location, event_capacity, event_registration_deadline)
+
+// List events + event instances
+app.get('/events', async (req, res) => {
+  const userId = req.query.userId || null;
+  const level = req.query.level || 'U';
+  const q = req.query.q;
+
+  // Event instances joined to parent event
+  let instanceSql = `
+    SELECT ei.event_instance_id,
+           ei.event_name,
+           e.event_type,
+           e.event_description,
+           ei.event_datetime_start,
+           ei.event_datetime_end,
+           ei.event_location,
+           ei.event_capacity,
+           ei.event_registration_deadline
+    FROM event_instance ei
+    JOIN event e ON e.event_name = ei.event_name
+  `;
+  const instanceParams = [];
+
+  if (q) {
+    instanceSql += `
+      WHERE ei.event_name ILIKE ?
+         OR e.event_type ILIKE ?
+         OR e.event_description ILIKE ?
+         OR ei.event_location ILIKE ?
+    `;
+    const like = '%' + q + '%';
+    instanceParams.push(like, like, like, like);
+  }
+
+  instanceSql += ' ORDER BY ei.event_datetime_start';
+
+  const eventsSql = `
+    SELECT event_name,
+           event_type,
+           event_description,
+           event_recurrence_pattern,
+           event_default_capacity
+    FROM event
+    ORDER BY event_name
+  `;
+
+  let myRegsSql = null;
+  const promises = [
+    db.query(instanceSql, instanceParams),
+    db.query(eventsSql, []),
+  ];
+
+  if (userId) {
+    myRegsSql = `
+      SELECT r.event_instance_id,
+             ei.event_name,
+             e.event_type,
+             e.event_description,
+             ei.event_datetime_start,
+             ei.event_datetime_end,
+             ei.event_location
+      FROM registration r
+      JOIN event_instance ei ON ei.event_instance_id = r.event_instance_id
+      JOIN event e ON e.event_name = ei.event_name
+      WHERE r.participant_email = ?
+      ORDER BY ei.event_datetime_start
+    `;
+    promises.push(db.query(myRegsSql, [userId]));
+  }
+
+  try {
+    const results = await Promise.all(promises);
+    const instances = results[0].rows;
+    const events = results[1].rows;
+    const myRegs = userId ? results[2].rows : [];
+    const myInstanceIds = myRegs.map(r => r.event_instance_id);
+
+    res.render('events', {
+      loggedInUserId: userId,
+      loggedInLevel: level,
+      eventInstances: instances,
+      events: events,
+      search: q || '',
+      myRegistrations: myRegs,
+      myInstanceIds,
+    });
+  } catch (err) {
+    console.error('Events error', err);
+    res.render('events', {
+      loggedInUserId: userId,
+      loggedInLevel: level,
+      eventInstances: [],
+      events: [],
+      search: q || '',
+      myRegistrations: [],
+      myInstanceIds: [],
+    });
+  }
+});
+
+// Add event – manager only (parent "event" table)
+app.post('/events/add', requireLogin, async (req, res) => {
+  const { userId, level } = req.query;
+  if (!isManager(level))
+    return res.status(403).send('Only managers can add events.');
+
+  const {
+    event_name,
+    event_type,
+    event_description,
+    event_recurrence_pattern,
+    event_default_capacity,
+  } = req.body;
+
+  try {
+    await db.query(
+      `INSERT INTO event
+         (event_name, event_type, event_description, event_recurrence_pattern, event_default_capacity)
+       VALUES (?,?,?,?,?)`,
+      [
+        event_name,
+        event_type || null,
+        event_description || null,
+        event_recurrence_pattern || null,
+        event_default_capacity || null,
+      ]
+    );
+    redirectWithUser(res, '/events', userId, level);
+  } catch (err) {
+    console.error('Add event error', err);
+    redirectWithUser(res, '/events', userId, level);
+  }
+});
+
+// Edit event – manager only (parent "event" table)
+app.post('/events/edit/:event_name', requireLogin, async (req, res) => {
+  const { userId, level } = req.query;
+  if (!isManager(level))
+    return res.status(403).send('Only managers can edit events.');
+
+  const { event_name } = req.params;
+  const {
+    event_type,
+    event_description,
+    event_recurrence_pattern,
+    event_default_capacity,
+  } = req.body;
+
+  try {
+    await db.query(
+      `UPDATE event
+         SET event_type = ?,
+             event_description = ?,
+             event_recurrence_pattern = ?,
+             event_default_capacity = ?
+       WHERE event_name = ?`,
+      [
+        event_type || null,
+        event_description || null,
+        event_recurrence_pattern || null,
+        event_default_capacity || null,
+        event_name,
+      ]
+    );
+    redirectWithUser(res, '/events', userId, level);
+  } catch (err) {
+    console.error('Edit event error', err);
+    redirectWithUser(res, '/events', userId, level);
+  }
+});
+
+// Delete event – manager only (parent "event" table)
+app.post('/events/delete/:event_name', requireLogin, async (req, res) => {
+  const { userId, level } = req.query;
+  if (!isManager(level))
+    return res.status(403).send('Only managers can delete events.');
+
+  const { event_name } = req.params;
+
+  try {
+    await db.query('DELETE FROM event WHERE event_name = ?', [event_name]);
+    redirectWithUser(res, '/events', userId, level);
+  } catch (err) {
+    console.error('Delete event error', err);
+    redirectWithUser(res, '/events', userId, level);
+  }
+});
+// ---------- Events ----------
+// event(event_name, event_type, event_description, event_recurrence_pattern, event_default_capacity)
+// event_instance(event_instance_id, event_name, event_datetime_start, event_datetime_end,
+//                event_location, event_capacity, event_registration_deadline)
+
+// List upcoming events + instances
+app.get('/events', async (req, res) => {
+  const userId = req.query.userId || null;
+  const level = req.query.level || 'U';
+  const q = req.query.q;
+
+  // --- UPCOMING EVENT INSTANCES (ONLY FUTURE) ---
+  let instanceSql = `
+    SELECT ei.event_instance_id,
+           ei.event_name,
+           e.event_type,
+           e.event_description,
+           ei.event_datetime_start,
+           ei.event_datetime_end,
+           ei.event_location,
+           ei.event_capacity,
+           ei.event_registration_deadline
+    FROM event_instance ei
+    JOIN event e ON e.event_name = ei.event_name
+  `;
+  const instanceParams = [];
+  const whereParts = ['ei.event_datetime_start >= NOW()']; // only future
+
+  if (q) {
+    whereParts.push(`
+      (
+        ei.event_name ILIKE ?
+        OR e.event_type ILIKE ?
+        OR e.event_description ILIKE ?
+        OR ei.event_location ILIKE ?
+      )
+    `);
+    const like = '%' + q + '%';
+    instanceParams.push(like, like, like, like);
+  }
+
+  if (whereParts.length > 0) {
+    instanceSql += ' WHERE ' + whereParts.join(' AND ');
+  }
+
+  instanceSql += ' ORDER BY ei.event_datetime_start';
+
+  // --- PARENT EVENTS (for manager CRUD) ---
+  const eventsSql = `
+    SELECT event_name,
+           event_type,
+           event_description,
+           event_recurrence_pattern,
+           event_default_capacity
+    FROM event
+    ORDER BY event_name
+  `;
+
+  // --- USER'S OWN REGISTRATIONS (also only future) ---
+  const promises = [
+    db.query(instanceSql, instanceParams),
+    db.query(eventsSql, []),
+  ];
+
+  if (userId) {
+    const myRegsSql = `
+      SELECT r.event_instance_id,
+             ei.event_name,
+             e.event_type,
+             e.event_description,
+             ei.event_datetime_start,
+             ei.event_datetime_end,
+             ei.event_location
+      FROM registration r
+      JOIN event_instance ei ON ei.event_instance_id = r.event_instance_id
+      JOIN event e ON e.event_name = ei.event_name
+      WHERE r.participant_email = ?
+        AND ei.event_datetime_start >= NOW()
+      ORDER BY ei.event_datetime_start
+    `;
+    promises.push(db.query(myRegsSql, [userId]));
+  }
+
+  try {
+    const results = await Promise.all(promises);
+
+    const instancesResult = results[0];
+    const eventsResult = results[1];
+
+    const eventInstances = instancesResult.rows || instancesResult;
+    const events = eventsResult.rows || eventsResult;
+
+    let myRegistrations = [];
+    let myInstanceIds = [];
+
+    if (userId && results[2]) {
+      const myRegsResult = results[2];
+      myRegistrations = myRegsResult.rows || myRegsResult;
+      myInstanceIds = myRegistrations.map(r => r.event_instance_id);
+    }
+
+    res.render('events', {
+      loggedInUserId: userId,
+      loggedInLevel: level,
+      eventInstances,
+      events,
+      search: q || '',
+      myRegistrations,
+      myInstanceIds,
+    });
+  } catch (err) {
+    console.error('Events error', err);
+    res.render('events', {
+      loggedInUserId: userId,
+      loggedInLevel: level,
+      eventInstances: [],
+      events: [],
+      search: q || '',
+      myRegistrations: [],
+      myInstanceIds: [],
+    });
+  }
+});
+
+// Add event – manager only (parent "event" table)
+app.post('/events/add', requireLogin, async (req, res) => {
+  const { userId, level } = req.query;
+  if (!isManager(level))
+    return res.status(403).send('Only managers can add events.');
+
+  const {
+    event_name,
+    event_type,
+    event_description,
+    event_recurrence_pattern,
+    event_default_capacity,
+  } = req.body;
+
+  try {
+    await db.query(
+      `INSERT INTO event
+         (event_name, event_type, event_description, event_recurrence_pattern, event_default_capacity)
+       VALUES (?,?,?,?,?)`,
+      [
+        event_name,
+        event_type || null,
+        event_description || null,
+        event_recurrence_pattern || null,
+        event_default_capacity || null,
+      ]
+    );
+    redirectWithUser(res, '/events', userId, level);
+  } catch (err) {
+    console.error('Add event error', err);
+    redirectWithUser(res, '/events', userId, level);
+  }
+});
+
+// Edit event – manager only (parent "event" table)
+app.post('/events/edit/:event_name', requireLogin, async (req, res) => {
+  const { userId, level } = req.query;
+  if (!isManager(level))
+    return res.status(403).send('Only managers can edit events.');
+
+  const { event_name } = req.params;
+  const {
+    event_type,
+    event_description,
+    event_recurrence_pattern,
+    event_default_capacity,
+  } = req.body;
+
+  try {
+    await db.query(
+      `UPDATE event
+         SET event_type = ?,
+             event_description = ?,
+             event_recurrence_pattern = ?,
+             event_default_capacity = ?
+       WHERE event_name = ?`,
+      [
+        event_type || null,
+        event_description || null,
+        event_recurrence_pattern || null,
+        event_default_capacity || null,
+        event_name,
+      ]
+    );
+    redirectWithUser(res, '/events', userId, level);
+  } catch (err) {
+    console.error('Edit event error', err);
+    redirectWithUser(res, '/events', userId, level);
+  }
+});
+
+// Delete event – manager only (parent "event" table)
+app.post('/events/delete/:event_name', requireLogin, async (req, res) => {
+  const { userId, level } = req.query;
+  if (!isManager(level))
+    return res.status(403).send('Only managers can delete events.');
+
+  const { event_name } = req.params;
+
+  try {
+    await db.query('DELETE FROM event WHERE event_name = ?', [event_name]);
+    redirectWithUser(res, '/events', userId, level);
+  } catch (err) {
+    console.error('Delete event error', err);
+    redirectWithUser(res, '/events', userId, level);
+  }
+});
+
+// User signup for an event instance (USER ONLY, NOT MANAGER)
+app.post('/events/:eventInstanceId/signup', requireLogin, async (req, res) => {
+  const userId = req.query.userId || req.userId || req.session.userId;
+  const level = req.query.level || req.level || req.session.level;
+  const { eventInstanceId } = req.params;
+
+  // only normal users sign up
+  if (isManager(level)) {
+    return redirectWithUser(res, '/events', userId, level);
+  }
+
+  try {
+    // Look up instance
+    const instResult = await db.query(
+      'SELECT event_name, event_datetime_start FROM event_instance WHERE event_instance_id = ?',
+      [eventInstanceId]
+    );
+    const instRows = instResult.rows || [];
+    if (instRows.length === 0) {
+      console.error('No such event instance:', eventInstanceId);
+      return redirectWithUser(res, '/events', userId, level);
+    }
+    const inst = instRows[0];
+
+    // Already registered?
+    const existResult = await db.query(
+      `SELECT 1
+         FROM registration
+        WHERE participant_email = ?
+          AND event_instance_id = ?`,
+      [userId, eventInstanceId]
+    );
+    const existRows = existResult.rows || [];
+    if (existRows.length > 0) {
+      return redirectWithUser(res, '/events', userId, level);
+    }
+
+    // Create ID
+    const idResult = await db.query(
+      'SELECT COALESCE(MAX(registration_id), 0) + 1 AS next_id FROM registration',
+      []
+    );
+    const idRows = idResult.rows || [];
+    const nextId = (idRows[0] && idRows[0].next_id) || 1;
+
+    // Insert registration
+    await db.query(
+      `INSERT INTO registration (
+         registration_id,
+         participant_email,
+         event_name,
+         event_datetime_start,
+         registration_status,
+         regestration_attended_flag,
+         registration_check_in_time,
+         registration_created_at,
+         survey_satisfaction_score,
+         survey_usefulness_score,
+         survey_instructor_score,
+         survey_recommendation_score,
+         survey_overall_score,
+         survey_nps_bucket,
+         survey_comments,
+         survey_submission_date,
+         event_instance_id
+       )
+       VALUES (
+         ?, ?, ?, ?, 'Registered', FALSE, NULL, NOW(),
+         NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
+         ?
+       )`,
+      [
+        nextId,
+        userId,
+        inst.event_name,
+        inst.event_datetime_start,
+        eventInstanceId,
+      ]
+    );
+
+    redirectWithUser(res, '/events', userId, level);
+  } catch (err) {
+    console.error('Signup for event instance error', err);
+    redirectWithUser(res, '/events', userId, level);
+  }
+});
+
+// Manager: edit event instance
+app.post('/event_instances/edit/:eventInstanceId', requireLogin, async (req, res) => {
+  const { userId, level } = req.query;
+  if (!isManager(level))
+    return res.status(403).send('Only managers can edit event instances.');
+
+  const { eventInstanceId } = req.params;
+  const {
+    event_datetime_start,
+    event_datetime_end,
+    event_location,
+    event_capacity,
+    event_registration_deadline,
+  } = req.body;
+
+  try {
+    await db.query(
+      `UPDATE event_instance
+         SET event_datetime_start = ?,
+             event_datetime_end = ?,
+             event_location = ?,
+             event_capacity = ?,
+             event_registration_deadline = ?
+       WHERE event_instance_id = ?`,
+      [
+        event_datetime_start || null,
+        event_datetime_end || null,
+        event_location || null,
+        event_capacity || null,
+        event_registration_deadline || null,
+        eventInstanceId,
+      ]
+    );
+    redirectWithUser(res, '/events', userId, level);
+  } catch (err) {
+    console.error('Edit event_instance error', err);
+    redirectWithUser(res, '/events', userId, level);
+  }
+});
+
+// Manager: delete event instance
+app.post('/event_instances/delete/:eventInstanceId', requireLogin, async (req, res) => {
+  const { userId, level } = req.query;
+  if (!isManager(level))
+    return res.status(403).send('Only managers can delete event instances.');
+
+  const { eventInstanceId } = req.params;
+
+  try {
+    await db.query(
+      'DELETE FROM event_instance WHERE event_instance_id = ?',
+      [eventInstanceId]
+    );
+    redirectWithUser(res, '/events', userId, level);
+  } catch (err) {
+    console.error('Delete event_instance error', err);
+    redirectWithUser(res, '/events', userId, level);
+  }
+});
+
+
 
 // ---------- Surveys (view only – simple) ----------
 // registration(..., participant_email, event_name, survey_overall_score, survey_comments, ...)
