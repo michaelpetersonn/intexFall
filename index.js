@@ -34,6 +34,12 @@ function isManager(level) {
   return level === 'M';
 }
 
+function numberOrNull(value) {
+  if (value === undefined || value === null || value === '') return null;
+  const num = Number(value);
+  return Number.isNaN(num) ? null : num;
+}
+
 // Preserve user info when redirecting
 function redirectWithUser(res, path, userId, level) {
   res.redirect(
@@ -1301,50 +1307,408 @@ app.post('/event_instances/delete/:eventInstanceId', requireLogin, async (req, r
 // ---------- Surveys (view only – simple) ----------
 // registration(..., participant_email, event_name, survey_overall_score, survey_comments, ...)
 
-app.get('/surveys', async (req, res) => {
-  const userId = req.query.userId || null;
-  const level = req.query.level || 'U';
-  const q = req.query.q;
+app.get('/surveys', requireLogin, async (req, res) => {
+  const userId = req.userId;
+  const level = req.level;
+  const q = req.query.q || '';
+  const notice = req.query.notice || '';
+  const error = req.query.error || '';
 
-  let sql = `
-    SELECT registration_id,
-           participant_email,
-           event_name,
-           survey_overall_score,
-           survey_comments
-    FROM registration
-  `;
-  const params = [];
-
-  if (q) {
-    sql += `
-      WHERE CAST(registration_id AS TEXT) ILIKE ?
-         OR participant_email ILIKE ?
-         OR event_name ILIKE ?
-         OR survey_comments ILIKE ?
-    `;
-    const like = '%' + q + '%';
-    params.push(like, like, like, like);
-  }
-
-  sql += ' ORDER BY registration_id DESC';
+  const managerView = isManager(level);
 
   try {
-    const surveys = await db.query(sql, params);
-    res.render('surveys', {
-      loggedInUserId: userId,
-      loggedInLevel: level,
-      surveys: surveys.rows,
-      search: q || '',
-    });
+    if (managerView) {
+      let sql = `
+        SELECT r.registration_id,
+               r.participant_email,
+               r.event_name,
+               r.event_datetime_start,
+               r.event_instance_id,
+               r.survey_satisfaction_score,
+               r.survey_usefulness_score,
+               r.survey_instructor_score,
+               r.survey_recommendation_score,
+               r.survey_overall_score,
+               r.survey_nps_bucket,
+               r.survey_comments,
+               r.survey_submission_date
+          FROM registration r
+      `;
+      const params = [];
+      if (q) {
+        sql += `
+          WHERE CAST(r.registration_id AS TEXT) ILIKE ?
+             OR r.participant_email ILIKE ?
+             OR r.event_name ILIKE ?
+             OR r.survey_comments ILIKE ?
+        `;
+        const like = '%' + q + '%';
+        params.push(like, like, like, like);
+      }
+      sql += ' ORDER BY r.event_datetime_start DESC NULLS LAST, r.registration_id DESC';
+
+      const surveysResult = await db.query(sql, params);
+      const surveys = surveysResult.rows || surveysResult;
+
+      res.render('surveys', {
+        loggedInUserId: userId,
+        loggedInLevel: level,
+        viewMode: 'manage',
+        surveys,
+        myRegistrations: [],
+        surveyTarget: null,
+        search: q,
+        notice,
+        error,
+      });
+    } else {
+      const myRegsResult = await db.query(
+        `
+        SELECT r.registration_id,
+               r.participant_email,
+               r.event_name,
+               r.event_datetime_start,
+               r.event_instance_id,
+               r.survey_overall_score,
+               r.survey_submission_date,
+               ei.event_location
+          FROM registration r
+          LEFT JOIN event_instance ei ON ei.event_instance_id = r.event_instance_id
+         WHERE r.participant_email = ?
+         ORDER BY r.event_datetime_start DESC NULLS LAST, r.registration_id DESC
+        `,
+        [userId]
+      );
+      const myRegistrations = myRegsResult.rows || myRegsResult;
+
+      res.render('surveys', {
+        loggedInUserId: userId,
+        loggedInLevel: level,
+        viewMode: 'user',
+        surveys: [],
+        myRegistrations,
+        surveyTarget: null,
+        search: '',
+        notice,
+        error,
+      });
+    }
   } catch (err) {
     console.error('Surveys error', err);
     res.render('surveys', {
       loggedInUserId: userId,
       loggedInLevel: level,
+      viewMode: managerView ? 'manage' : 'user',
       surveys: [],
-      search: q || '',
+      myRegistrations: [],
+      surveyTarget: null,
+      search: q,
+      notice: '',
+      error: 'There was a problem loading survey data.',
     });
+  }
+});
+
+app.get('/surveys/take/:registrationId', requireLogin, async (req, res) => {
+  const userId = req.userId;
+  const level = req.level;
+  const { registrationId } = req.params;
+
+  try {
+    const regResult = await db.query(
+      `
+      SELECT r.registration_id,
+             r.participant_email,
+             r.event_name,
+             r.event_datetime_start,
+             r.event_instance_id,
+             r.survey_satisfaction_score,
+             r.survey_usefulness_score,
+             r.survey_instructor_score,
+             r.survey_recommendation_score,
+             r.survey_overall_score,
+             r.survey_comments
+        FROM registration r
+       WHERE r.registration_id = ?
+      `,
+      [registrationId]
+    );
+    const regRows = regResult.rows || regResult;
+    if (!regRows || regRows.length === 0) {
+      return res.status(404).send('Registration not found.');
+    }
+    const reg = regRows[0];
+
+    if (!isManager(level) && reg.participant_email !== userId) {
+      return res.status(403).send('You can only take surveys for your own registrations.');
+    }
+
+    res.render('surveys', {
+      loggedInUserId: userId,
+      loggedInLevel: level,
+      viewMode: 'take',
+      surveyTarget: reg,
+      surveys: [],
+      myRegistrations: [],
+      search: '',
+      notice: '',
+      error: '',
+    });
+  } catch (err) {
+    console.error('Load survey form error', err);
+    redirectWithUser(res, '/surveys', userId, level);
+  }
+});
+
+app.post('/surveys/submit/:registrationId', requireLogin, async (req, res) => {
+  const userId = req.userId;
+  const level = req.level;
+  const { registrationId } = req.params;
+  const {
+    survey_satisfaction_score,
+    survey_usefulness_score,
+    survey_instructor_score,
+    survey_recommendation_score,
+    survey_overall_score,
+    survey_comments,
+  } = req.body;
+
+  try {
+    const regResult = await db.query(
+      'SELECT participant_email FROM registration WHERE registration_id = ?',
+      [registrationId]
+    );
+    const regRows = regResult.rows || regResult;
+    const reg = regRows[0];
+    if (!reg) return res.status(404).send('Registration not found.');
+    if (!isManager(level) && reg.participant_email !== userId) {
+      return res.status(403).send('You can only submit surveys for your own registrations.');
+    }
+
+    const recommendationNum = numberOrNull(survey_recommendation_score);
+    let surveyBucket = null;
+    if (recommendationNum !== null) {
+      if (recommendationNum >= 4) surveyBucket = 'Promoter';
+      else if (recommendationNum >= 3) surveyBucket = 'Passive';
+      else surveyBucket = 'Detractor';
+    }
+
+    await db.query(
+      `
+      UPDATE registration
+         SET survey_satisfaction_score = ?,
+             survey_usefulness_score = ?,
+             survey_instructor_score = ?,
+             survey_recommendation_score = ?,
+             survey_overall_score = ?,
+             survey_nps_bucket = ?,
+             survey_comments = ?,
+             survey_submission_date = NOW()
+       WHERE registration_id = ?
+      `,
+      [
+        numberOrNull(survey_satisfaction_score),
+        numberOrNull(survey_usefulness_score),
+        numberOrNull(survey_instructor_score),
+        recommendationNum,
+        numberOrNull(survey_overall_score),
+        surveyBucket,
+        survey_comments || null,
+        registrationId,
+      ]
+    );
+
+    res.redirect(
+      `/surveys?userId=${encodeURIComponent(userId)}&level=${encodeURIComponent(
+        level
+      )}&notice=${encodeURIComponent('Survey saved')}`
+    );
+  } catch (err) {
+    console.error('Submit survey error', err);
+    res.redirect(
+      `/surveys?userId=${encodeURIComponent(userId)}&level=${encodeURIComponent(
+        level
+      )}&error=${encodeURIComponent('Could not save survey')}`
+    );
+  }
+});
+
+app.post('/surveys/manage/:registrationId', requireLogin, async (req, res) => {
+  const { userId, level } = req;
+  if (!isManager(level)) return res.status(403).send('Only managers can manage surveys.');
+
+  const { registrationId } = req.params;
+  const { action } = req.body;
+  const {
+    survey_satisfaction_score,
+    survey_usefulness_score,
+    survey_instructor_score,
+    survey_recommendation_score,
+    survey_overall_score,
+    survey_comments,
+  } = req.body;
+
+  try {
+    const existingResult = await db.query(
+      'SELECT registration_id FROM registration WHERE registration_id = ?',
+      [registrationId]
+    );
+    const existingRows = existingResult.rows || existingResult;
+    if (!existingRows || existingRows.length === 0) {
+      return res.redirect(
+        `/surveys?userId=${encodeURIComponent(userId)}&level=${encodeURIComponent(
+          level
+        )}&error=${encodeURIComponent('Registration not found')}`
+      );
+    }
+
+    if (action === 'delete') {
+      await db.query(
+        `
+        UPDATE registration
+           SET survey_satisfaction_score = NULL,
+               survey_usefulness_score = NULL,
+               survey_instructor_score = NULL,
+               survey_recommendation_score = NULL,
+               survey_overall_score = NULL,
+               survey_nps_bucket = NULL,
+               survey_comments = NULL,
+               survey_submission_date = NULL
+         WHERE registration_id = ?
+        `,
+        [registrationId]
+      );
+    } else {
+      const recommendationNum = numberOrNull(survey_recommendation_score);
+      let surveyBucket = null;
+      if (recommendationNum !== null) {
+        if (recommendationNum >= 4) surveyBucket = 'Promoter';
+        else if (recommendationNum >= 3) surveyBucket = 'Passive';
+        else surveyBucket = 'Detractor';
+      }
+
+      await db.query(
+        `
+        UPDATE registration
+           SET survey_satisfaction_score = ?,
+               survey_usefulness_score = ?,
+               survey_instructor_score = ?,
+               survey_recommendation_score = ?,
+               survey_overall_score = ?,
+               survey_nps_bucket = ?,
+               survey_comments = ?,
+               survey_submission_date = NOW()
+         WHERE registration_id = ?
+        `,
+        [
+          numberOrNull(survey_satisfaction_score),
+          numberOrNull(survey_usefulness_score),
+          numberOrNull(survey_instructor_score),
+          recommendationNum,
+          numberOrNull(survey_overall_score),
+          surveyBucket,
+          survey_comments || null,
+          registrationId,
+        ]
+      );
+    }
+
+    res.redirect(
+      `/surveys?userId=${encodeURIComponent(userId)}&level=${encodeURIComponent(
+        level
+      )}&notice=${encodeURIComponent('Survey updated')}`
+    );
+  } catch (err) {
+    console.error('Manage survey error', err);
+    res.redirect(
+      `/surveys?userId=${encodeURIComponent(userId)}&level=${encodeURIComponent(
+        level
+      )}&error=${encodeURIComponent('Could not update survey')}`
+    );
+  }
+});
+
+app.post('/surveys/manage', requireLogin, async (req, res) => {
+  const { userId, level } = req;
+  if (!isManager(level)) return res.status(403).send('Only managers can manage surveys.');
+
+  const {
+    registration_id,
+    survey_satisfaction_score,
+    survey_usefulness_score,
+    survey_instructor_score,
+    survey_recommendation_score,
+    survey_overall_score,
+    survey_comments,
+  } = req.body;
+
+  if (!registration_id) {
+    return res.redirect(
+      `/surveys?userId=${encodeURIComponent(userId)}&level=${encodeURIComponent(
+        level
+      )}&error=${encodeURIComponent('Registration ID required')}`
+    );
+  }
+
+  try {
+    const existingResult = await db.query(
+      'SELECT registration_id FROM registration WHERE registration_id = ?',
+      [registration_id]
+    );
+    const existingRows = existingResult.rows || existingResult;
+    if (!existingRows || existingRows.length === 0) {
+      return res.redirect(
+        `/surveys?userId=${encodeURIComponent(userId)}&level=${encodeURIComponent(
+          level
+        )}&error=${encodeURIComponent('Registration not found')}`
+      );
+    }
+
+    const recommendationNum = numberOrNull(survey_recommendation_score);
+    let surveyBucket = null;
+    if (recommendationNum !== null) {
+      if (recommendationNum >= 4) surveyBucket = 'Promoter';
+      else if (recommendationNum >= 3) surveyBucket = 'Passive';
+      else surveyBucket = 'Detractor';
+    }
+
+    await db.query(
+      `
+      UPDATE registration
+         SET survey_satisfaction_score = ?,
+             survey_usefulness_score = ?,
+             survey_instructor_score = ?,
+             survey_recommendation_score = ?,
+             survey_overall_score = ?,
+             survey_nps_bucket = ?,
+             survey_comments = ?,
+             survey_submission_date = NOW()
+       WHERE registration_id = ?
+      `,
+      [
+        numberOrNull(survey_satisfaction_score),
+        numberOrNull(survey_usefulness_score),
+        numberOrNull(survey_instructor_score),
+        recommendationNum,
+        numberOrNull(survey_overall_score),
+        surveyBucket,
+        survey_comments || null,
+        registration_id,
+      ]
+    );
+
+    res.redirect(
+      `/surveys?userId=${encodeURIComponent(userId)}&level=${encodeURIComponent(
+        level
+      )}&notice=${encodeURIComponent('Survey added')}`
+    );
+  } catch (err) {
+    console.error('Add survey error', err);
+    res.redirect(
+      `/surveys?userId=${encodeURIComponent(userId)}&level=${encodeURIComponent(
+        level
+      )}&error=${encodeURIComponent('Could not add survey')}`
+    );
   }
 });
 
