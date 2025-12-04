@@ -31,6 +31,14 @@ function redirectWithUser(res, path, userId, level) {
   );
 }
 
+// Helper to format 10-digit phone as xxx-xxx-xxxx
+app.locals.formatPhone = function (phone) {
+  if (!phone) return '';
+  const digits = String(phone).replace(/\D/g, '');
+  if (digits.length !== 10) return phone; // fall back if weird
+  return `${digits.slice(0, 3)}-${digits.slice(3, 6)}-${digits.slice(6)}`;
+};
+
 // ---------- Login ----------
 // users(participant_email, password, user_level)
 
@@ -350,56 +358,70 @@ app.post('/users/delete/:participant_email', requireLogin, async (req, res) => {
 
 // ---------- Participants ----------
 // participant(participant_email, participant_first_name, participant_last_name, ...)
-
-// GET /participants – list & optional search
 app.get('/participants', async (req, res) => {
   const userId = req.query.userId || null;
-  const level = req.query.level || null; // null = not logged in
+  const level = req.query.level || null; // 'M', 'U', or null (visitor)
   const q = req.query.q;
 
-  // Choose columns based on role
-  let sql;
-  if (level === 'M') {
-    // Manager: see everything
-    sql = `
-      SELECT participant_email,
-             participant_first_name,
-             participant_last_name,
-             participant_dob,
-             participant_role,
-             participant_phone,
-             participant_city,
-             participant_state,
-             participant_zip,
-             participant_school_or_employer,
-             participant_field_of_interest,
-             total_donations
-      FROM participant
-    `;
-  } else {
-    // User (or not logged in): limited view
-    sql = `
-      SELECT participant_email,
-             participant_first_name,
-             participant_last_name,
-             participant_role,
-             participant_field_of_interest
-      FROM participant
-    `;
-  }
-
   const params = [];
+
+  // Base query: get ALL participant fields we care about + milestones_list
+  let sql = `
+    SELECT
+      p.participant_email,
+      p.participant_first_name,
+      p.participant_last_name,
+      TO_CHAR(p.participant_dob, 'MM/DD/YYYY') AS participant_dob,
+      p.participant_role,
+      p.participant_phone,
+      p.participant_city,
+      p.participant_state,
+      p.participant_zip,
+      p.participant_school_or_employer,
+      p.participant_field_of_interest,
+      p.total_donations,
+      COALESCE(
+        STRING_AGG(
+          m.milestone_title || ' (' || TO_CHAR(m.milestone_date, 'MM/DD/YYYY') || ')',
+          ', ' ORDER BY m.milestone_date
+        ),
+        ''
+      ) AS milestones_list
+    FROM participant p
+    LEFT JOIN milestone m
+      ON m.participant_email = p.participant_email
+  `;
+
+  // Optional search (must come BEFORE GROUP BY)
   if (q) {
     sql += `
-      WHERE participant_first_name ILIKE ?
-         OR participant_last_name  ILIKE ?
-         OR participant_email      ILIKE ?
+      WHERE
+        p.participant_first_name ILIKE ?
+        OR p.participant_last_name  ILIKE ?
+        OR p.participant_email      ILIKE ?
     `;
     const like = `%${q}%`;
     params.push(like, like, like);
   }
 
-  sql += ' ORDER BY participant_last_name, participant_first_name';
+  sql += `
+    GROUP BY
+      p.participant_email,
+      p.participant_first_name,
+      p.participant_last_name,
+      p.participant_dob,
+      p.participant_role,
+      p.participant_phone,
+      p.participant_city,
+      p.participant_state,
+      p.participant_zip,
+      p.participant_school_or_employer,
+      p.participant_field_of_interest,
+      p.total_donations
+    ORDER BY
+      p.participant_last_name,
+      p.participant_first_name
+  `;
 
   try {
     const result = await db.query(sql, params);
@@ -422,7 +444,20 @@ app.get('/participants', async (req, res) => {
   }
 });
 
-// Add participant – manager only
+// ---------- NEW PARTICIPANT FORM (GET) ----------
+app.get('/participants/new', requireLogin, (req, res) => {
+  const { userId, level } = req.query;
+  if (!isManager(level)) {
+    return res.status(403).send('Only managers can add participants.');
+  }
+
+  res.render('participantsNew', {
+    loggedInUserId: userId,
+    loggedInLevel: level,
+  });
+});
+
+// ---------- ADD PARTICIPANT (POST) ----------
 app.post('/participants/add', requireLogin, async (req, res) => {
   const { userId, level } = req.query;
   if (!isManager(level)) return res.status(403).send('Only managers can add participants.');
@@ -432,6 +467,12 @@ app.post('/participants/add', requireLogin, async (req, res) => {
     participant_first_name,
     participant_last_name,
     participant_role,
+    participant_dob,                 // from <input type="date">
+    participant_phone,
+    participant_city,
+    participant_state,
+    participant_zip,
+    participant_school_or_employer,
     participant_field_of_interest,
   } = req.body;
 
@@ -442,16 +483,28 @@ app.post('/participants/add', requireLogin, async (req, res) => {
         participant_email,
         participant_first_name,
         participant_last_name,
+        participant_dob,
         participant_role,
+        participant_phone,
+        participant_city,
+        participant_state,
+        participant_zip,
+        participant_school_or_employer,
         participant_field_of_interest
       )
-      VALUES (?, ?, ?, ?, ?)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `,
       [
         participant_email,
         participant_first_name,
         participant_last_name,
+        participant_dob || null,
         participant_role || null,
+        participant_phone || null,
+        participant_city || null,
+        participant_state || null,
+        participant_zip || null,
+        participant_school_or_employer || null,
         participant_field_of_interest || null,
       ]
     );
@@ -462,7 +515,55 @@ app.post('/participants/add', requireLogin, async (req, res) => {
   }
 });
 
-// Edit participant – manager only (email is key)
+// ---------- EDIT PARTICIPANT FORM (GET) ----------
+app.get('/participants/edit/:participant_email', requireLogin, async (req, res) => {
+  const { userId, level } = req.query;
+  if (!isManager(level)) {
+    return res.status(403).send('Only managers can edit participants.');
+  }
+
+  const { participant_email } = req.params;
+
+  try {
+    const result = await db.query(
+      `
+      SELECT
+        participant_email,
+        participant_first_name,
+        participant_last_name,
+        TO_CHAR(participant_dob, 'YYYY-MM-DD') AS participant_dob_input,
+        participant_role,
+        participant_phone,
+        participant_city,
+        participant_state,
+        participant_zip,
+        participant_school_or_employer,
+        participant_field_of_interest
+      FROM participant
+      WHERE participant_email = ?
+      `,
+      [participant_email]
+    );
+
+    const rows = result.rows || result;
+    if (!rows.length) {
+      return res.status(404).send('Participant not found.');
+    }
+
+    const participant = rows[0];
+
+    res.render('participantsEdit', {
+      loggedInUserId: userId,
+      loggedInLevel: level,
+      participant,
+    });
+  } catch (err) {
+    console.error('Edit participant (GET) error', err);
+    redirectWithUser(res, '/participants', userId, level);
+  }
+});
+
+// ---------- EDIT PARTICIPANT (POST) ----------
 app.post('/participants/edit/:participant_email', requireLogin, async (req, res) => {
   const { userId, level } = req.query;
   if (!isManager(level)) return res.status(403).send('Only managers can edit participants.');
@@ -472,6 +573,12 @@ app.post('/participants/edit/:participant_email', requireLogin, async (req, res)
     participant_first_name,
     participant_last_name,
     participant_role,
+    participant_dob,
+    participant_phone,
+    participant_city,
+    participant_state,
+    participant_zip,
+    participant_school_or_employer,
     participant_field_of_interest,
   } = req.body;
 
@@ -479,28 +586,40 @@ app.post('/participants/edit/:participant_email', requireLogin, async (req, res)
     await db.query(
       `
       UPDATE participant
-      SET participant_first_name       = ?,
-          participant_last_name        = ?,
-          participant_role             = ?,
+      SET participant_first_name        = ?,
+          participant_last_name         = ?,
+          participant_dob               = ?,
+          participant_role              = ?,
+          participant_phone             = ?,
+          participant_city              = ?,
+          participant_state             = ?,
+          participant_zip               = ?,
+          participant_school_or_employer = ?,
           participant_field_of_interest = ?
-      WHERE participant_email          = ?
+      WHERE participant_email           = ?
       `,
       [
         participant_first_name,
         participant_last_name,
+        participant_dob || null,
         participant_role || null,
+        participant_phone || null,
+        participant_city || null,
+        participant_state || null,
+        participant_zip || null,
+        participant_school_or_employer || null,
         participant_field_of_interest || null,
         participant_email,
       ]
     );
     redirectWithUser(res, '/participants', userId, level);
   } catch (err) {
-    console.error('Edit participant error', err);
+    console.error('Edit participant (POST) error', err);
     redirectWithUser(res, '/participants', userId, level);
   }
 });
 
-// Delete participant – manager only
+// ---------- DELETE PARTICIPANT ----------
 app.post('/participants/delete/:participant_email', requireLogin, async (req, res) => {
   const { userId, level } = req.query;
   if (!isManager(level)) return res.status(403).send('Only managers can delete participants.');
@@ -516,139 +635,6 @@ app.post('/participants/delete/:participant_email', requireLogin, async (req, re
   } catch (err) {
     console.error('Delete participant error', err);
     redirectWithUser(res, '/participants', userId, level);
-  }
-});
-
-// ---------- Events ----------
-// event(event_name, event_type, event_description, event_recurrence_pattern, event_default_capacity)
-
-app.get('/events', async (req, res) => {
-  const userId = req.query.userId || null;
-  const level = req.query.level || 'U';
-  const q = req.query.q;
-
-  let sql = `
-    SELECT event_name,
-           event_type,
-           event_description,
-           event_recurrence_pattern,
-           event_default_capacity
-    FROM event
-  `;
-  const params = [];
-
-  if (q) {
-    sql += ' WHERE event_name ILIKE ? OR event_description ILIKE ?';
-    const like = '%' + q + '%';
-    params.push(like, like);
-  }
-
-  sql += ' ORDER BY event_name';
-
-  try {
-    const events = await db.query(sql, params);
-    res.render('events', {
-      loggedInUserId: userId,
-      loggedInLevel: level,
-      events: events.rows,
-      search: q || '',
-    });
-  } catch (err) {
-    console.error('Events error', err);
-    res.render('events', {
-      loggedInUserId: userId,
-      loggedInLevel: level,
-      events: [],
-      search: q || '',
-    });
-  }
-});
-
-// Add event – manager only
-app.post('/events/add', requireLogin, async (req, res) => {
-  const { userId, level } = req.query;
-  if (!isManager(level))
-    return res.status(403).send('Only managers can add events.');
-
-  const {
-    event_name,
-    event_type,
-    event_description,
-    event_recurrence_pattern,
-    event_default_capacity,
-  } = req.body;
-
-  try {
-    await db.query(
-      `INSERT INTO event
-         (event_name, event_type, event_description, event_recurrence_pattern, event_default_capacity)
-       VALUES (?,?,?,?,?)`,
-      [
-        event_name,
-        event_type || null,
-        event_description || null,
-        event_recurrence_pattern || null,
-        event_default_capacity || null,
-      ]
-    );
-    redirectWithUser(res, '/events', userId, level);
-  } catch (err) {
-    console.error('Add event error', err);
-    redirectWithUser(res, '/events', userId, level);
-  }
-});
-
-// Edit event – manager only (identified by event_name)
-app.post('/events/edit/:event_name', requireLogin, async (req, res) => {
-  const { userId, level } = req.query;
-  if (!isManager(level))
-    return res.status(403).send('Only managers can edit events.');
-
-  const { event_name } = req.params;
-  const {
-    event_type,
-    event_description,
-    event_recurrence_pattern,
-    event_default_capacity,
-  } = req.body;
-
-  try {
-    await db.query(
-      `UPDATE event
-         SET event_type = ?,
-             event_description = ?,
-             event_recurrence_pattern = ?,
-             event_default_capacity = ?
-       WHERE event_name = ?`,
-      [
-        event_type || null,
-        event_description || null,
-        event_recurrence_pattern || null,
-        event_default_capacity || null,
-        event_name,
-      ]
-    );
-    redirectWithUser(res, '/events', userId, level);
-  } catch (err) {
-    console.error('Edit event error', err);
-    redirectWithUser(res, '/events', userId, level);
-  }
-});
-
-// Delete event – manager only
-app.post('/events/delete/:event_name', requireLogin, async (req, res) => {
-  const { userId, level } = req.query;
-  if (!isManager(level))
-    return res.status(403).send('Only managers can delete events.');
-
-  const { event_name } = req.params;
-
-  try {
-    await db.query('DELETE FROM event WHERE event_name = ?', [event_name]);
-    redirectWithUser(res, '/events', userId, level);
-  } catch (err) {
-    console.error('Delete event error', err);
-    redirectWithUser(res, '/events', userId, level);
   }
 });
 
@@ -704,45 +690,53 @@ app.get('/surveys', async (req, res) => {
 
 // ---------- Milestones ----------
 // milestone(milestone_id, participant_email, user_milestone_number, milestone_title, milestone_date)
-
 app.get('/milestones', async (req, res) => {
   const userId = req.query.userId || null;
-  const level = req.query.level || 'U';
+  const level = req.query.level || null; // 'M', 'U', or null (visitor)
   const q = req.query.q;
 
+  const params = [];
+
   let sql = `
-    SELECT m.milestone_id,
-           m.participant_email,
-           m.user_milestone_number,
-           m.milestone_title,
-           m.milestone_date,
-           p.participant_first_name,
-           p.participant_last_name
+    SELECT
+      m.milestone_id,
+      m.participant_email,
+      m.user_milestone_number,
+      m.milestone_title,
+      TO_CHAR(m.milestone_date, 'YYYY-MM-DD') AS milestone_date,
+      p.participant_first_name,
+      p.participant_last_name
     FROM milestone m
     LEFT JOIN participant p
       ON p.participant_email = m.participant_email
   `;
-  const params = [];
 
   if (q) {
     sql += `
-      WHERE m.milestone_title ILIKE ?
-         OR m.participant_email ILIKE ?
-         OR p.participant_first_name ILIKE ?
-         OR p.participant_last_name ILIKE ?
+      WHERE
+        m.milestone_title ILIKE ?
+        OR m.participant_email ILIKE ?
+        OR p.participant_first_name ILIKE ?
+        OR p.participant_last_name ILIKE ?
     `;
-    const like = '%' + q + '%';
+    const like = `%${q}%`;
     params.push(like, like, like, like);
   }
 
-  sql += ' ORDER BY m.milestone_date DESC';
+  sql += `
+    ORDER BY
+      m.milestone_date DESC,
+      m.milestone_id DESC
+  `;
 
   try {
-    const milestones = await db.query(sql, params);
+    const result = await db.query(sql, params);
+    const rows = result.rows || result;
+
     res.render('milestones', {
       loggedInUserId: userId,
       loggedInLevel: level,
-      milestones: milestones.rows,
+      milestones: rows,
       search: q || '',
     });
   } catch (err) {
@@ -756,50 +750,129 @@ app.get('/milestones', async (req, res) => {
   }
 });
 
-// GET assign form – manager only
-app.get('/milestones/assign', requireLogin, async (req, res) => {
+// Add milestone – manager only
+app.post('/milestones/add', requireLogin, async (req, res) => {
   const { userId, level } = req.query;
-  if (!isManager(level))
-    return res.status(403).send('Only managers can assign milestones.');
+  if (!isManager(level)) {
+    return res.status(403).send('Only managers can add milestones.');
+  }
+
+  const { participant_email, milestone_title, milestone_date } = req.body;
 
   try {
-    const participants = await db.query(
-      `SELECT participant_email,
-              participant_first_name,
-              participant_last_name
-       FROM participant
-       ORDER BY participant_last_name, participant_first_name`
+    await db.query(
+      `
+      INSERT INTO milestone (
+        participant_email,
+        user_milestone_number,
+        milestone_title,
+        milestone_date
+      )
+      VALUES (?, 1, ?, ?)
+      `,
+      [participant_email, milestone_title, milestone_date || null]
     );
 
-    res.render('milestonesAssign', {
-      loggedInUserId: userId,
-      loggedInLevel: level,
-      participants: participants.rows,
-    });
+    redirectWithUser(res, '/milestones', userId, level);
   } catch (err) {
-    console.error('Milestones assign error', err);
+    console.error('Add milestone error', err);
     redirectWithUser(res, '/milestones', userId, level);
   }
 });
 
-// POST assign – manager only (create milestone row for a participant)
-app.post('/milestones/assign', requireLogin, async (req, res) => {
+// GET edit milestone – manager only
+app.get('/milestones/edit/:milestone_id', requireLogin, async (req, res) => {
   const { userId, level } = req.query;
-  if (!isManager(level))
-    return res.status(403).send('Only managers can assign milestones.');
+  if (!isManager(level)) {
+    return res.status(403).send('Only managers can edit milestones.');
+  }
 
-  const { participant_email, milestone_title } = req.body;
+  const { milestone_id } = req.params;
+
+  try {
+    const result = await db.query(
+      `
+      SELECT
+        m.milestone_id,
+        m.participant_email,
+        m.milestone_title,
+        TO_CHAR(m.milestone_date, 'YYYY-MM-DD') AS milestone_date,
+        p.participant_first_name,
+        p.participant_last_name
+      FROM milestone m
+      LEFT JOIN participant p
+        ON p.participant_email = m.participant_email
+      WHERE m.milestone_id = ?
+      `,
+      [milestone_id]
+    );
+
+    const rows = result.rows || result;
+
+    if (!rows.length) {
+      console.warn('Milestone not found:', milestone_id);
+      return redirectWithUser(res, '/milestones', userId, level);
+    }
+
+    const milestone = rows[0];
+
+    res.render('milestoneEdit', {
+      loggedInUserId: userId,
+      loggedInLevel: level,
+      milestone,
+    });
+  } catch (err) {
+    console.error('Load milestone for edit error:', err);
+    redirectWithUser(res, '/milestones', userId, level);
+  }
+});
+
+// POST edit milestone – manager only
+app.post('/milestones/edit/:milestone_id', requireLogin, async (req, res) => {
+  const { userId, level } = req.query;
+  if (!isManager(level)) {
+    return res.status(403).send('Only managers can edit milestones.');
+  }
+
+  const { milestone_id } = req.params;
+  const { milestone_title, milestone_date } = req.body;
 
   try {
     await db.query(
-      `INSERT INTO milestone
-         (participant_email, user_milestone_number, milestone_title, milestone_date)
-       VALUES (?,?,?, CURRENT_DATE)`,
-      [participant_email, 1, milestone_title]
+      `
+      UPDATE milestone
+      SET milestone_title = ?,
+          milestone_date  = ?
+      WHERE milestone_id  = ?
+      `,
+      [milestone_title, milestone_date || null, milestone_id]
     );
+
     redirectWithUser(res, '/milestones', userId, level);
   } catch (err) {
-    console.error('Assign milestone error', err);
+    console.error('Update milestone error:', err);
+    redirectWithUser(res, '/milestones', userId, level);
+  }
+});
+
+// Delete milestone – manager only
+app.post('/milestones/delete/:milestone_id', requireLogin, async (req, res) => {
+  const { userId, level } = req.query;
+  if (!isManager(level)) {
+    return res.status(403).send('Only managers can delete milestones.');
+  }
+
+  const { milestone_id } = req.params;
+
+  try {
+    await db.query(
+      'DELETE FROM milestone WHERE milestone_id = ?',
+      [milestone_id]
+    );
+
+    redirectWithUser(res, '/milestones', userId, level);
+  } catch (err) {
+    console.error('Delete milestone error:', err);
     redirectWithUser(res, '/milestones', userId, level);
   }
 });

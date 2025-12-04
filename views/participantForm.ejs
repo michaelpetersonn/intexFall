@@ -1,0 +1,129 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title><%= mode === 'edit' ? 'Edit Participant' : 'Add Participant' %> - Ella Rises</title>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+</head>
+<body class="bg-light">
+  <div class="container py-4">
+
+    <header class="d-flex justify-content-between align-items-center mb-3">
+      <div>
+        <h1 class="h4 mb-0">
+          <%= mode === 'edit' ? 'Edit Participant' : 'Add Participant' %>
+        </h1>
+        <small class="text-muted">
+          <%= mode === 'edit'
+                ? 'Update participant details.'
+                : 'Create a new participant with full information.' %>
+        </small>
+      </div>
+
+      <div>
+        <a href="/participants?userId=<%= loggedInUserId %>&level=<%= loggedInLevel %>"
+           class="btn btn-outline-secondary btn-sm">
+          Back to participants
+        </a>
+      </div>
+    </header>
+
+    <div class="card shadow-sm">
+      <div class="card-body">
+        <form method="POST" action="<%= formAction %>" class="row g-3">
+
+          <div class="col-md-6">
+            <label class="form-label">First name</label>
+            <input name="participant_first_name"
+                   class="form-control"
+                   value="<%= participant.participant_first_name || '' %>"
+                   required>
+          </div>
+
+          <div class="col-md-6">
+            <label class="form-label">Last name</label>
+            <input name="participant_last_name"
+                   class="form-control"
+                   value="<%= participant.participant_last_name || '' %>"
+                   required>
+          </div>
+
+          <div class="col-md-6">
+            <label class="form-label">Email (login key)</label>
+            <input name="participant_email"
+                   type="email"
+                   class="form-control"
+                   value="<%= participant.participant_email || '' %>"
+                   <%= mode === 'edit' ? 'readonly' : 'required' %>>
+          </div>
+
+          <div class="col-md-3">
+            <label class="form-label">DOB</label>
+            <input name="participant_dob"
+                   type="date"
+                   class="form-control"
+                   value="<%= participant.participant_dob || '' %>">
+          </div>
+
+          <div class="col-md-3">
+            <label class="form-label">Role</label>
+            <input name="participant_role"
+                   class="form-control"
+                   value="<%= participant.participant_role || '' %>">
+          </div>
+
+          <div class="col-md-4">
+            <label class="form-label">Field of interest</label>
+            <input name="participant_field_of_interest"
+                   class="form-control"
+                   value="<%= participant.participant_field_of_interest || '' %>">
+          </div>
+
+          <div class="col-md-4">
+            <label class="form-label">Phone (digits only)</label>
+            <input name="participant_phone"
+                   class="form-control"
+                   value="<%= participant.participant_phone || '' %>">
+          </div>
+
+          <div class="col-md-4">
+            <label class="form-label">City</label>
+            <input name="participant_city"
+                   class="form-control"
+                   value="<%= participant.participant_city || '' %>">
+          </div>
+
+          <div class="col-md-2">
+            <label class="form-label">State</label>
+            <input name="participant_state"
+                   class="form-control"
+                   value="<%= participant.participant_state || '' %>">
+          </div>
+
+          <div class="col-md-2">
+            <label class="form-label">Zip</label>
+            <input name="participant_zip"
+                   class="form-control"
+                   value="<%= participant.participant_zip || '' %>">
+          </div>
+
+          <div class="col-md-8">
+            <label class="form-label">School / Employer</label>
+            <input name="participant_school_or_employer"
+                   class="form-control"
+                   value="<%= participant.participant_school_or_employer || '' %>">
+          </div>
+
+          <div class="col-12 text-end">
+            <button class="btn btn-primary" type="submit">
+              <%= mode === 'edit' ? 'Save changes' : 'Create participant' %>
+            </button>
+          </div>
+
+        </form>
+      </div>
+    </div>
+
+  </div>
+</body>
+</html>

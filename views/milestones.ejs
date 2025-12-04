@@ -8,19 +8,25 @@
 <body class="bg-light">
   <div class="container py-4">
 
-    <!-- Header -->
     <header class="d-flex justify-content-between align-items-center mb-3">
       <h1 class="h4 mb-0">Milestones</h1>
       <div>
         <small class="me-3">
-          Logged in as <strong><%= loggedInLevel === 'M' ? 'Manager' : 'User' %></strong>
+          Logged in as
+          <strong>
+            <%= loggedInLevel === 'M'
+                  ? 'Manager'
+                  : (loggedInLevel === 'U' ? 'User' : 'Visitor') %>
+          </strong>
         </small>
-        <a href="/landing<%= loggedInUserId ? ('?userId=' + loggedInUserId + '&level=' + loggedInLevel) : '' %>"
+        <a href="/landing?userId=<%= loggedInUserId %>&level=<%= loggedInLevel %>"
            class="btn btn-outline-secondary btn-sm">
           Back to dashboard
         </a>
       </div>
     </header>
+
+    <% const isManager = (loggedInLevel === 'M'); %>
 
     <!-- Search -->
     <form class="row g-2 mb-3" method="GET" action="/milestones">
@@ -29,44 +35,98 @@
       <div class="col-sm-4">
         <input class="form-control"
                name="q"
-               placeholder="Search by milestone or participant"
-               value="<%= search %>">
+               placeholder="Search by participant, email, or title"
+               value="<%= search || '' %>">
       </div>
       <div class="col-sm-auto">
         <button class="btn btn-outline-primary" type="submit">Search</button>
       </div>
     </form>
 
-    <!-- Assign button for managers -->
-    <% if (loggedInLevel === 'M') { %>
-      <div class="mb-3">
-        <a class="btn btn-dark"
-           href="/milestones/assign?userId=<%= loggedInUserId %>&level=<%= loggedInLevel %>">
-          Assign milestone to participant
-        </a>
+    <!-- Manager-only: Add milestone -->
+    <% if (isManager) { %>
+      <div class="card mb-4">
+        <div class="card-header">Add milestone</div>
+        <div class="card-body">
+          <form method="POST"
+                action="/milestones/add?userId=<%= loggedInUserId %>&level=<%= loggedInLevel %>"
+                class="row g-2">
+
+            <div class="col-md-4">
+              <label class="form-label mb-1 small">Participant email</label>
+              <input name="participant_email"
+                     type="email"
+                     class="form-control"
+                     placeholder="participant@example.com"
+                     required>
+              <div class="form-text">Must match an existing participant.</div>
+            </div>
+
+            <div class="col-md-4">
+              <label class="form-label mb-1 small">Title</label>
+              <input name="milestone_title"
+                     class="form-control"
+                     placeholder="e.g., Completed Workshop 1"
+                     required>
+            </div>
+
+            <div class="col-md-3">
+              <label class="form-label mb-1 small">Date achieved</label>
+              <input name="milestone_date"
+                     type="date"
+                     class="form-control">
+            </div>
+
+            <div class="col-md-1 d-grid align-items-end">
+              <button class="btn btn-dark mt-4" type="submit">Add</button>
+            </div>
+          </form>
+        </div>
       </div>
     <% } %>
 
-    <!-- Table -->
-    <table class="table table-striped table-hover bg-white shadow-sm">
+    <!-- Milestones table -->
+    <table class="table table-striped table-hover bg-white shadow-sm align-middle">
       <thead>
         <tr>
           <th>Participant</th>
-          <th>Participant Email</th>
-          <th>Milestone Title</th>
-          <th>Date Achieved</th>
+          <th>Email</th>
+          <th>Title</th>
+          <th>Date achieved</th>
+          <% if (isManager) { %>
+            <th style="width: 180px;">Actions</th>
+          <% } %>
         </tr>
       </thead>
       <tbody>
         <% milestones.forEach(m => { %>
           <tr>
             <td>
-              <%= m.participant_first_name || '' %>
-              <%= m.participant_last_name || '' %>
+              <% if (m.participant_last_name || m.participant_first_name) { %>
+                <%= (m.participant_last_name || '') %>, <%= (m.participant_first_name || '') %>
+              <% } else { %>
+                <span class="text-muted">Unknown</span>
+              <% } %>
             </td>
             <td><%= m.participant_email %></td>
             <td><%= m.milestone_title %></td>
-            <td><%= m.milestone_date ? new Date(m.milestone_date).toLocaleDateString() : '' %></td>
+            <td><%= m.milestone_date || '' %></td>
+
+            <% if (isManager) { %>
+              <td>
+                <a class="btn btn-sm btn-outline-primary mb-1"
+                   href="/milestones/edit/<%= m.milestone_id %>?userId=<%= loggedInUserId %>&level=<%= loggedInLevel %>">
+                  Edit
+                </a>
+
+                <form method="POST"
+                      action="/milestones/delete/<%= m.milestone_id %>?userId=<%= loggedInUserId %>&level=<%= loggedInLevel %>"
+                      onsubmit="return confirm('Delete this milestone?');"
+                      class="d-inline">
+                  <button class="btn btn-sm btn-outline-danger" type="submit">Delete</button>
+                </form>
+              </td>
+            <% } %>
           </tr>
         <% }) %>
       </tbody>
