@@ -99,9 +99,8 @@
         <% donations.forEach(d => { %>
           <tr>
             <td>
-              <%= d.donation_date
-                    ? new Date(d.donation_date).toLocaleDateString()
-                    : '' %>
+              <% const dateVal = d.donation_date_fmt || d.donation_date; %>
+              <%= dateVal ? new Date(dateVal).toLocaleDateString() : '' %>
             </td>
             <td><%= d.participant_first_name %> <%= d.participant_last_name %></td>
             <td><%= d.participant_email %></td>

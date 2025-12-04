@@ -1453,16 +1453,18 @@ app.post('/milestones/assign', requireLogin, async (req, res) => {
 // ----------- DONATIONS (internal list + public donation page) ------------
 // donation(donation_id, participant_email, user_donation_number, donation_date, donation_amount)
 
-// ---------- Internal Donations List (viewable by anyone, with search) ----------
+// ---------- Internal Donations List ----------
 app.get('/donations', async (req, res) => {
-  const userId = req.query.userId || null;
-  const level = req.query.level || 'U';
+  const userId = req.query.userId || req.session.userId || null;
+  const level = req.query.level || req.session.level || 'U';
   const q = req.query.q;
 
+  // Base select
   let sql = `
     SELECT d.donation_id,
            d.participant_email,
            d.donation_date,
+           TO_CHAR(d.donation_date, 'YYYY-MM-DD') AS donation_date_fmt,
            d.donation_amount,
            p.participant_first_name,
            p.participant_last_name
@@ -1471,15 +1473,28 @@ app.get('/donations', async (req, res) => {
       ON p.participant_email = d.participant_email
   `;
   const params = [];
+  const whereParts = [];
+
+  // If user, restrict to their email
+  if (level !== 'M' && userId) {
+    whereParts.push('d.participant_email = ?');
+    params.push(userId);
+  }
 
   if (q) {
-    sql += `
-      WHERE p.participant_first_name ILIKE ?
-         OR p.participant_last_name ILIKE ?
-         OR d.participant_email ILIKE ?
-    `;
+    whereParts.push(`
+      (
+        p.participant_first_name ILIKE ?
+        OR p.participant_last_name ILIKE ?
+        OR d.participant_email ILIKE ?
+      )
+    `);
     const like = '%' + q + '%';
     params.push(like, like, like);
+  }
+
+  if (whereParts.length > 0) {
+    sql += ' WHERE ' + whereParts.join(' AND ');
   }
 
   sql += ' ORDER BY d.donation_date DESC';
@@ -1592,7 +1607,7 @@ app.post('/donate', async (req, res) => {
   const { name, email, amount } = req.body;
 
   try {
-    // 1) Try to insert/ensure participant exists (very simple; ignore if fails)
+    // 1) Try to insert/ensure participant exists (store full name in first_name)
     try {
       await db.query(
         `INSERT INTO participant
@@ -1601,21 +1616,37 @@ app.post('/donate', async (req, res) => {
         [email, name]
       );
     } catch (innerErr) {
-      console.warn(
-        'Participant insert (public donate) warning:',
-        innerErr.message
-      );
+      // Likely duplicate; safe to continue
+      console.warn('Participant insert (public donate) warning:', innerErr.message);
     }
 
-    // 2) Insert donation tied to the participant_email
+    // 2) Compute next donation_id (manual for compatibility) and per-user donation number
+    const nextIdResult = await db.query(
+      'SELECT COALESCE(MAX(donation_id), 0) + 1 AS next_id FROM donation',
+      []
+    );
+    const nextDonationId =
+      (nextIdResult.rows && nextIdResult.rows[0] && nextIdResult.rows[0].next_id) || 1;
+
+    const nextUserNumResult = await db.query(
+      'SELECT COALESCE(MAX(user_donation_number), 0) + 1 AS next_num FROM donation WHERE participant_email = ?',
+      [email]
+    );
+    const nextUserDonationNumber =
+      (nextUserNumResult.rows &&
+        nextUserNumResult.rows[0] &&
+        nextUserNumResult.rows[0].next_num) ||
+      1;
+
+    // 3) Insert donation tied to the participant_email
     await db.query(
       `INSERT INTO donation
-         (participant_email, user_donation_number, donation_date, donation_amount)
-       VALUES (?,?, CURRENT_DATE, ?)`,
-      [email, 1, amount]
+         (donation_id, participant_email, user_donation_number, donation_date, donation_amount)
+       VALUES (?,?,?, CURRENT_DATE, ?)`,
+      [nextDonationId, email, nextUserDonationNumber, amount]
     );
 
-    // 3) Show success message
+    // 4) Show success message
     res.render('donatePublic', {
       success: 'Thank you for your generous support!',
       error: null,
