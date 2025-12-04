@@ -3,23 +3,41 @@ require('dotenv').config();
 const express = require('express');
 const db = require('./db');
 
+const session = require('express-session');
+
 const app = express();
 app.set('view engine', 'ejs');
 app.set('views', __dirname + '/views');
 app.use(express.urlencoded({ extended: true }));
+app.use(
+  session({
+    secret: process.env.SESSION_SECRET || 'ella-rises-secret',
+    resave: false,
+    saveUninitialized: true,
+  })
+);
 
 // ---------- Helpers ----------
 function requireLogin(req, res, next) {
-  // Keep login info in the query string (like the IS403 example)
-  const { userId, level } = req.query;
+  // Accept credentials from query string or session
+  const userId = req.query.userId || req.session.userId;
+  const level = req.query.level || req.session.level;
   if (!userId || !level) {
     return res.redirect('/login');
   }
+  req.userId = userId;
+  req.level = level;
   next();
 }
 
 function isManager(level) {
   return level === 'M';
+}
+
+function numberOrNull(value) {
+  if (value === undefined || value === null || value === '') return null;
+  const num = Number(value);
+  return Number.isNaN(num) ? null : num;
 }
 
 // Preserve user info when redirecting
@@ -79,6 +97,10 @@ app.post('/login', async (req, res) => {
       user.userrole ||
       'U';
 
+    // Persist in session
+    req.session.userId = userId;
+    req.session.level = level;
+
     res.redirect(
       `/landing?userId=${encodeURIComponent(userId)}&level=${level}`
     );
@@ -116,6 +138,7 @@ app.get('/dbtest', async (req, res) => {
 
 // ---------- LOGOUT ----------
 app.get('/logout', (req, res) => {
+  req.session.destroy(() => {});
   // Just redirect them to landing WITHOUT userId/level
   return res.redirect('/landing');
 });
@@ -123,9 +146,9 @@ app.get('/logout', (req, res) => {
 // ---------- Landing / dashboard ----------
 
 app.get('/landing', async (req, res) => {
-  // If query params exist, use them; otherwise treat as NOT logged in
-  const userId = req.query.userId || null;
-  const level = req.query.level || null;
+  // Prefer query params; fall back to session
+  const userId = req.query.userId || req.session.userId || null;
+  const level = req.query.level || req.session.level || null;
 
   try {
     const [participants, events, donations, surveys] = await Promise.all([
@@ -638,6 +661,139 @@ app.post('/participants/delete/:participant_email', requireLogin, async (req, re
   }
 });
 
+// ---------- Events ----------
+// event(event_name, event_type, event_description, event_recurrence_pattern, event_default_capacity)
+
+app.get('/events', async (req, res) => {
+  const userId = req.query.userId || null;
+  const level = req.query.level || 'U';
+  const q = req.query.q;
+
+  let sql = `
+    SELECT event_name,
+           event_type,
+           event_description,
+           event_recurrence_pattern,
+           event_default_capacity
+    FROM event
+  `;
+  const params = [];
+
+  if (q) {
+    sql += ' WHERE event_name ILIKE ? OR event_description ILIKE ?';
+    const like = '%' + q + '%';
+    params.push(like, like);
+  }
+
+  sql += ' ORDER BY event_name';
+
+  try {
+    const events = await db.query(sql, params);
+    res.render('events', {
+      loggedInUserId: userId,
+      loggedInLevel: level,
+      events: events.rows,
+      search: q || '',
+    });
+  } catch (err) {
+    console.error('Events error', err);
+    res.render('events', {
+      loggedInUserId: userId,
+      loggedInLevel: level,
+      events: [],
+      search: q || '',
+    });
+  }
+});
+
+// Add event – manager only
+app.post('/events/add', requireLogin, async (req, res) => {
+  const { userId, level } = req.query;
+  if (!isManager(level))
+    return res.status(403).send('Only managers can add events.');
+
+  const {
+    event_name,
+    event_type,
+    event_description,
+    event_recurrence_pattern,
+    event_default_capacity,
+  } = req.body;
+
+  try {
+    await db.query(
+      `INSERT INTO event
+         (event_name, event_type, event_description, event_recurrence_pattern, event_default_capacity)
+       VALUES (?,?,?,?,?)`,
+      [
+        event_name,
+        event_type || null,
+        event_description || null,
+        event_recurrence_pattern || null,
+        event_default_capacity || null,
+      ]
+    );
+    redirectWithUser(res, '/events', userId, level);
+  } catch (err) {
+    console.error('Add event error', err);
+    redirectWithUser(res, '/events', userId, level);
+  }
+});
+
+// Edit event – manager only (identified by event_name)
+app.post('/events/edit/:event_name', requireLogin, async (req, res) => {
+  const { userId, level } = req.query;
+  if (!isManager(level))
+    return res.status(403).send('Only managers can edit events.');
+
+  const { event_name } = req.params;
+  const {
+    event_type,
+    event_description,
+    event_recurrence_pattern,
+    event_default_capacity,
+  } = req.body;
+
+  try {
+    await db.query(
+      `UPDATE event
+         SET event_type = ?,
+             event_description = ?,
+             event_recurrence_pattern = ?,
+             event_default_capacity = ?
+       WHERE event_name = ?`,
+      [
+        event_type || null,
+        event_description || null,
+        event_recurrence_pattern || null,
+        event_default_capacity || null,
+        event_name,
+      ]
+    );
+    redirectWithUser(res, '/events', userId, level);
+  } catch (err) {
+    console.error('Edit event error', err);
+    redirectWithUser(res, '/events', userId, level);
+  }
+});
+
+// Delete event – manager only
+app.post('/events/delete/:event_name', requireLogin, async (req, res) => {
+  const { userId, level } = req.query;
+  if (!isManager(level))
+    return res.status(403).send('Only managers can delete events.');
+
+  const { event_name } = req.params;
+
+  try {
+    await db.query('DELETE FROM event WHERE event_name = ?', [event_name]);
+    redirectWithUser(res, '/events', userId, level);
+  } catch (err) {
+    console.error('Delete event error', err);
+    redirectWithUser(res, '/events', userId, level);
+  }
+});
+
 // ---------- Surveys (view only – simple) ----------
 // registration(..., participant_email, event_name, survey_overall_score, survey_comments, ...)
 
@@ -646,45 +802,761 @@ app.get('/surveys', async (req, res) => {
   const level = req.query.level || 'U';
   const q = req.query.q;
 
-  let sql = `
-    SELECT registration_id,
-           participant_email,
-           event_name,
-           survey_overall_score,
-           survey_comments
-    FROM registration
+  // --- UPCOMING EVENT INSTANCES (ONLY FUTURE) ---
+  let instanceSql = `
+    SELECT ei.event_instance_id,
+           ei.event_name,
+           e.event_type,
+           e.event_description,
+           ei.event_datetime_start,
+           ei.event_datetime_end,
+           ei.event_location,
+           ei.event_capacity,
+           ei.event_registration_deadline
+    FROM event_instance ei
+    JOIN event e ON e.event_name = ei.event_name
   `;
-  const params = [];
+  const instanceParams = [];
+  const whereParts = ['ei.event_datetime_start >= NOW()']; // only future
 
   if (q) {
-    sql += `
-      WHERE CAST(registration_id AS TEXT) ILIKE ?
-         OR participant_email ILIKE ?
-         OR event_name ILIKE ?
-         OR survey_comments ILIKE ?
-    `;
+    whereParts.push(`
+      (
+        ei.event_name ILIKE ?
+        OR e.event_type ILIKE ?
+        OR e.event_description ILIKE ?
+        OR ei.event_location ILIKE ?
+      )
+    `);
     const like = '%' + q + '%';
-    params.push(like, like, like, like);
+    instanceParams.push(like, like, like, like);
   }
 
-  sql += ' ORDER BY registration_id DESC';
+  if (whereParts.length > 0) {
+    instanceSql += ' WHERE ' + whereParts.join(' AND ');
+  }
+
+  instanceSql += ' ORDER BY ei.event_datetime_start';
+
+  // --- PARENT EVENTS (for manager CRUD) ---
+  const eventsSql = `
+    SELECT event_name,
+           event_type,
+           event_description,
+           event_recurrence_pattern,
+           event_default_capacity
+    FROM event
+    ORDER BY event_name
+  `;
+
+  // --- USER'S OWN REGISTRATIONS (also only future) ---
+  const promises = [
+    db.query(instanceSql, instanceParams),
+    db.query(eventsSql, []),
+  ];
+
+  if (userId) {
+    const myRegsSql = `
+      SELECT r.event_instance_id,
+             ei.event_name,
+             e.event_type,
+             e.event_description,
+             ei.event_datetime_start,
+             ei.event_datetime_end,
+             ei.event_location
+      FROM registration r
+      JOIN event_instance ei ON ei.event_instance_id = r.event_instance_id
+      JOIN event e ON e.event_name = ei.event_name
+      WHERE r.participant_email = ?
+        AND ei.event_datetime_start >= NOW()
+      ORDER BY ei.event_datetime_start
+    `;
+    promises.push(db.query(myRegsSql, [userId]));
+  }
 
   try {
-    const surveys = await db.query(sql, params);
-    res.render('surveys', {
+    const results = await Promise.all(promises);
+
+    const instancesResult = results[0];
+    const eventsResult = results[1];
+
+    const eventInstances = instancesResult.rows || instancesResult;
+    const events = eventsResult.rows || eventsResult;
+
+    let myRegistrations = [];
+    let myInstanceIds = [];
+
+    if (userId && results[2]) {
+      const myRegsResult = results[2];
+      myRegistrations = myRegsResult.rows || myRegsResult;
+      myInstanceIds = myRegistrations.map(r => r.event_instance_id);
+    }
+
+    res.render('events', {
       loggedInUserId: userId,
       loggedInLevel: level,
-      surveys: surveys.rows,
+      eventInstances,
+      events,
       search: q || '',
+      myRegistrations,
+      myInstanceIds,
     });
+  } catch (err) {
+    console.error('Events error', err);
+    res.render('events', {
+      loggedInUserId: userId,
+      loggedInLevel: level,
+      eventInstances: [],
+      events: [],
+      search: q || '',
+      myRegistrations: [],
+      myInstanceIds: [],
+    });
+  }
+});
+
+// Add event – manager only (parent "event" table)
+app.post('/events/add', requireLogin, async (req, res) => {
+  const { userId, level } = req.query;
+  if (!isManager(level))
+    return res.status(403).send('Only managers can add events.');
+
+  const {
+    event_name,
+    event_type,
+    event_description,
+    event_recurrence_pattern,
+    event_default_capacity,
+  } = req.body;
+
+  try {
+    await db.query(
+      `INSERT INTO event
+         (event_name, event_type, event_description, event_recurrence_pattern, event_default_capacity)
+       VALUES (?,?,?,?,?)`,
+      [
+        event_name,
+        event_type || null,
+        event_description || null,
+        event_recurrence_pattern || null,
+        event_default_capacity || null,
+      ]
+    );
+    redirectWithUser(res, '/events', userId, level);
+  } catch (err) {
+    console.error('Add event error', err);
+    redirectWithUser(res, '/events', userId, level);
+  }
+});
+
+// Edit event – manager only (parent "event" table)
+app.post('/events/edit/:event_name', requireLogin, async (req, res) => {
+  const { userId, level } = req.query;
+  if (!isManager(level))
+    return res.status(403).send('Only managers can edit events.');
+
+  const { event_name } = req.params;
+  const {
+    event_type,
+    event_description,
+    event_recurrence_pattern,
+    event_default_capacity,
+  } = req.body;
+
+  try {
+    await db.query(
+      `UPDATE event
+         SET event_type = ?,
+             event_description = ?,
+             event_recurrence_pattern = ?,
+             event_default_capacity = ?
+       WHERE event_name = ?`,
+      [
+        event_type || null,
+        event_description || null,
+        event_recurrence_pattern || null,
+        event_default_capacity || null,
+        event_name,
+      ]
+    );
+    redirectWithUser(res, '/events', userId, level);
+  } catch (err) {
+    console.error('Edit event error', err);
+    redirectWithUser(res, '/events', userId, level);
+  }
+});
+
+// Delete event – manager only (parent "event" table)
+app.post('/events/delete/:event_name', requireLogin, async (req, res) => {
+  const { userId, level } = req.query;
+  if (!isManager(level))
+    return res.status(403).send('Only managers can delete events.');
+
+  const { event_name } = req.params;
+
+  try {
+    await db.query('DELETE FROM event WHERE event_name = ?', [event_name]);
+    redirectWithUser(res, '/events', userId, level);
+  } catch (err) {
+    console.error('Delete event error', err);
+    redirectWithUser(res, '/events', userId, level);
+  }
+});
+
+// User signup for an event instance (USER ONLY, NOT MANAGER)
+app.post('/events/:eventInstanceId/signup', requireLogin, async (req, res) => {
+  const userId = req.query.userId || req.userId || req.session.userId;
+  const level = req.query.level || req.level || req.session.level;
+  const { eventInstanceId } = req.params;
+
+  // only normal users sign up
+  if (isManager(level)) {
+    return redirectWithUser(res, '/events', userId, level);
+  }
+
+  try {
+    // Look up instance
+    const instResult = await db.query(
+      'SELECT event_name, event_datetime_start FROM event_instance WHERE event_instance_id = ?',
+      [eventInstanceId]
+    );
+    const instRows = instResult.rows || [];
+    if (instRows.length === 0) {
+      console.error('No such event instance:', eventInstanceId);
+      return redirectWithUser(res, '/events', userId, level);
+    }
+    const inst = instRows[0];
+
+    // Already registered?
+    const existResult = await db.query(
+      `SELECT 1
+         FROM registration
+        WHERE participant_email = ?
+          AND event_instance_id = ?`,
+      [userId, eventInstanceId]
+    );
+    const existRows = existResult.rows || [];
+    if (existRows.length > 0) {
+      return redirectWithUser(res, '/events', userId, level);
+    }
+
+    // Create ID
+    const idResult = await db.query(
+      'SELECT COALESCE(MAX(registration_id), 0) + 1 AS next_id FROM registration',
+      []
+    );
+    const idRows = idResult.rows || [];
+    const nextId = (idRows[0] && idRows[0].next_id) || 1;
+
+    // Insert registration
+    await db.query(
+      `INSERT INTO registration (
+         registration_id,
+         participant_email,
+         event_name,
+         event_datetime_start,
+         registration_status,
+         regestration_attended_flag,
+         registration_check_in_time,
+         registration_created_at,
+         survey_satisfaction_score,
+         survey_usefulness_score,
+         survey_instructor_score,
+         survey_recommendation_score,
+         survey_overall_score,
+         survey_nps_bucket,
+         survey_comments,
+         survey_submission_date,
+         event_instance_id
+       )
+       VALUES (
+         ?, ?, ?, ?, 'Registered', FALSE, NULL, NOW(),
+         NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
+         ?
+       )`,
+      [
+        nextId,
+        userId,
+        inst.event_name,
+        inst.event_datetime_start,
+        eventInstanceId,
+      ]
+    );
+
+    redirectWithUser(res, '/events', userId, level);
+  } catch (err) {
+    console.error('Signup for event instance error', err);
+    redirectWithUser(res, '/events', userId, level);
+  }
+});
+
+// Manager: edit event instance
+app.post('/event_instances/edit/:eventInstanceId', requireLogin, async (req, res) => {
+  const { userId, level } = req.query;
+  if (!isManager(level))
+    return res.status(403).send('Only managers can edit event instances.');
+
+  const { eventInstanceId } = req.params;
+  const {
+    event_datetime_start,
+    event_datetime_end,
+    event_location,
+    event_capacity,
+    event_registration_deadline,
+  } = req.body;
+
+  try {
+    await db.query(
+      `UPDATE event_instance
+         SET event_datetime_start = ?,
+             event_datetime_end = ?,
+             event_location = ?,
+             event_capacity = ?,
+             event_registration_deadline = ?
+       WHERE event_instance_id = ?`,
+      [
+        event_datetime_start || null,
+        event_datetime_end || null,
+        event_location || null,
+        event_capacity || null,
+        event_registration_deadline || null,
+        eventInstanceId,
+      ]
+    );
+    redirectWithUser(res, '/events', userId, level);
+  } catch (err) {
+    console.error('Edit event_instance error', err);
+    redirectWithUser(res, '/events', userId, level);
+  }
+});
+
+// Manager: delete event instance
+app.post('/event_instances/delete/:eventInstanceId', requireLogin, async (req, res) => {
+  const { userId, level } = req.query;
+  if (!isManager(level))
+    return res.status(403).send('Only managers can delete event instances.');
+
+  const { eventInstanceId } = req.params;
+
+  try {
+    await db.query(
+      'DELETE FROM event_instance WHERE event_instance_id = ?',
+      [eventInstanceId]
+    );
+    redirectWithUser(res, '/events', userId, level);
+  } catch (err) {
+    console.error('Delete event_instance error', err);
+    redirectWithUser(res, '/events', userId, level);
+  }
+});
+
+
+
+// ---------- Surveys (view only – simple) ----------
+// registration(..., participant_email, event_name, survey_overall_score, survey_comments, ...)
+
+app.get('/surveys', requireLogin, async (req, res) => {
+  const userId = req.userId;
+  const level = req.level;
+  const q = req.query.q || '';
+  const notice = req.query.notice || '';
+  const error = req.query.error || '';
+
+  const managerView = isManager(level);
+
+  try {
+    if (managerView) {
+      let sql = `
+        SELECT r.registration_id,
+               r.participant_email,
+               r.event_name,
+               r.event_datetime_start,
+               r.event_instance_id,
+               r.survey_satisfaction_score,
+               r.survey_usefulness_score,
+               r.survey_instructor_score,
+               r.survey_recommendation_score,
+               r.survey_overall_score,
+               r.survey_nps_bucket,
+               r.survey_comments,
+               r.survey_submission_date
+          FROM registration r
+      `;
+      const params = [];
+      if (q) {
+        sql += `
+          WHERE CAST(r.registration_id AS TEXT) ILIKE ?
+             OR r.participant_email ILIKE ?
+             OR r.event_name ILIKE ?
+             OR r.survey_comments ILIKE ?
+        `;
+        const like = '%' + q + '%';
+        params.push(like, like, like, like);
+      }
+      sql += ' ORDER BY r.event_datetime_start DESC NULLS LAST, r.registration_id DESC';
+
+      const surveysResult = await db.query(sql, params);
+      const surveys = surveysResult.rows || surveysResult;
+
+      res.render('surveys', {
+        loggedInUserId: userId,
+        loggedInLevel: level,
+        viewMode: 'manage',
+        surveys,
+        myRegistrations: [],
+        surveyTarget: null,
+        search: q,
+        notice,
+        error,
+      });
+    } else {
+      const myRegsResult = await db.query(
+        `
+        SELECT r.registration_id,
+               r.participant_email,
+               r.event_name,
+               r.event_datetime_start,
+               r.event_instance_id,
+               r.survey_overall_score,
+               r.survey_submission_date,
+               ei.event_location
+          FROM registration r
+          LEFT JOIN event_instance ei ON ei.event_instance_id = r.event_instance_id
+         WHERE r.participant_email = ?
+         ORDER BY r.event_datetime_start DESC NULLS LAST, r.registration_id DESC
+        `,
+        [userId]
+      );
+      const myRegistrations = myRegsResult.rows || myRegsResult;
+
+      res.render('surveys', {
+        loggedInUserId: userId,
+        loggedInLevel: level,
+        viewMode: 'user',
+        surveys: [],
+        myRegistrations,
+        surveyTarget: null,
+        search: '',
+        notice,
+        error,
+      });
+    }
   } catch (err) {
     console.error('Surveys error', err);
     res.render('surveys', {
       loggedInUserId: userId,
       loggedInLevel: level,
+      viewMode: managerView ? 'manage' : 'user',
       surveys: [],
-      search: q || '',
+      myRegistrations: [],
+      surveyTarget: null,
+      search: q,
+      notice: '',
+      error: 'There was a problem loading survey data.',
     });
+  }
+});
+
+app.get('/surveys/take/:registrationId', requireLogin, async (req, res) => {
+  const userId = req.userId;
+  const level = req.level;
+  const { registrationId } = req.params;
+
+  try {
+    const regResult = await db.query(
+      `
+      SELECT r.registration_id,
+             r.participant_email,
+             r.event_name,
+             r.event_datetime_start,
+             r.event_instance_id,
+             r.survey_satisfaction_score,
+             r.survey_usefulness_score,
+             r.survey_instructor_score,
+             r.survey_recommendation_score,
+             r.survey_overall_score,
+             r.survey_comments
+        FROM registration r
+       WHERE r.registration_id = ?
+      `,
+      [registrationId]
+    );
+    const regRows = regResult.rows || regResult;
+    if (!regRows || regRows.length === 0) {
+      return res.status(404).send('Registration not found.');
+    }
+    const reg = regRows[0];
+
+    if (!isManager(level) && reg.participant_email !== userId) {
+      return res.status(403).send('You can only take surveys for your own registrations.');
+    }
+
+    res.render('surveys', {
+      loggedInUserId: userId,
+      loggedInLevel: level,
+      viewMode: 'take',
+      surveyTarget: reg,
+      surveys: [],
+      myRegistrations: [],
+      search: '',
+      notice: '',
+      error: '',
+    });
+  } catch (err) {
+    console.error('Load survey form error', err);
+    redirectWithUser(res, '/surveys', userId, level);
+  }
+});
+
+app.post('/surveys/submit/:registrationId', requireLogin, async (req, res) => {
+  const userId = req.userId;
+  const level = req.level;
+  const { registrationId } = req.params;
+  const {
+    survey_satisfaction_score,
+    survey_usefulness_score,
+    survey_instructor_score,
+    survey_recommendation_score,
+    survey_overall_score,
+    survey_comments,
+  } = req.body;
+
+  try {
+    const regResult = await db.query(
+      'SELECT participant_email FROM registration WHERE registration_id = ?',
+      [registrationId]
+    );
+    const regRows = regResult.rows || regResult;
+    const reg = regRows[0];
+    if (!reg) return res.status(404).send('Registration not found.');
+    if (!isManager(level) && reg.participant_email !== userId) {
+      return res.status(403).send('You can only submit surveys for your own registrations.');
+    }
+
+    const recommendationNum = numberOrNull(survey_recommendation_score);
+    let surveyBucket = null;
+    if (recommendationNum !== null) {
+      if (recommendationNum >= 4) surveyBucket = 'Promoter';
+      else if (recommendationNum >= 3) surveyBucket = 'Passive';
+      else surveyBucket = 'Detractor';
+    }
+
+    await db.query(
+      `
+      UPDATE registration
+         SET survey_satisfaction_score = ?,
+             survey_usefulness_score = ?,
+             survey_instructor_score = ?,
+             survey_recommendation_score = ?,
+             survey_overall_score = ?,
+             survey_nps_bucket = ?,
+             survey_comments = ?,
+             survey_submission_date = NOW()
+       WHERE registration_id = ?
+      `,
+      [
+        numberOrNull(survey_satisfaction_score),
+        numberOrNull(survey_usefulness_score),
+        numberOrNull(survey_instructor_score),
+        recommendationNum,
+        numberOrNull(survey_overall_score),
+        surveyBucket,
+        survey_comments || null,
+        registrationId,
+      ]
+    );
+
+    res.redirect(
+      `/surveys?userId=${encodeURIComponent(userId)}&level=${encodeURIComponent(
+        level
+      )}&notice=${encodeURIComponent('Survey saved')}`
+    );
+  } catch (err) {
+    console.error('Submit survey error', err);
+    res.redirect(
+      `/surveys?userId=${encodeURIComponent(userId)}&level=${encodeURIComponent(
+        level
+      )}&error=${encodeURIComponent('Could not save survey')}`
+    );
+  }
+});
+
+app.post('/surveys/manage/:registrationId', requireLogin, async (req, res) => {
+  const { userId, level } = req;
+  if (!isManager(level)) return res.status(403).send('Only managers can manage surveys.');
+
+  const { registrationId } = req.params;
+  const { action } = req.body;
+  const {
+    survey_satisfaction_score,
+    survey_usefulness_score,
+    survey_instructor_score,
+    survey_recommendation_score,
+    survey_overall_score,
+    survey_comments,
+  } = req.body;
+
+  try {
+    const existingResult = await db.query(
+      'SELECT registration_id FROM registration WHERE registration_id = ?',
+      [registrationId]
+    );
+    const existingRows = existingResult.rows || existingResult;
+    if (!existingRows || existingRows.length === 0) {
+      return res.redirect(
+        `/surveys?userId=${encodeURIComponent(userId)}&level=${encodeURIComponent(
+          level
+        )}&error=${encodeURIComponent('Registration not found')}`
+      );
+    }
+
+    if (action === 'delete') {
+      await db.query(
+        `
+        UPDATE registration
+           SET survey_satisfaction_score = NULL,
+               survey_usefulness_score = NULL,
+               survey_instructor_score = NULL,
+               survey_recommendation_score = NULL,
+               survey_overall_score = NULL,
+               survey_nps_bucket = NULL,
+               survey_comments = NULL,
+               survey_submission_date = NULL
+         WHERE registration_id = ?
+        `,
+        [registrationId]
+      );
+    } else {
+      const recommendationNum = numberOrNull(survey_recommendation_score);
+      let surveyBucket = null;
+      if (recommendationNum !== null) {
+        if (recommendationNum >= 4) surveyBucket = 'Promoter';
+        else if (recommendationNum >= 3) surveyBucket = 'Passive';
+        else surveyBucket = 'Detractor';
+      }
+
+      await db.query(
+        `
+        UPDATE registration
+           SET survey_satisfaction_score = ?,
+               survey_usefulness_score = ?,
+               survey_instructor_score = ?,
+               survey_recommendation_score = ?,
+               survey_overall_score = ?,
+               survey_nps_bucket = ?,
+               survey_comments = ?,
+               survey_submission_date = NOW()
+         WHERE registration_id = ?
+        `,
+        [
+          numberOrNull(survey_satisfaction_score),
+          numberOrNull(survey_usefulness_score),
+          numberOrNull(survey_instructor_score),
+          recommendationNum,
+          numberOrNull(survey_overall_score),
+          surveyBucket,
+          survey_comments || null,
+          registrationId,
+        ]
+      );
+    }
+
+    res.redirect(
+      `/surveys?userId=${encodeURIComponent(userId)}&level=${encodeURIComponent(
+        level
+      )}&notice=${encodeURIComponent('Survey updated')}`
+    );
+  } catch (err) {
+    console.error('Manage survey error', err);
+    res.redirect(
+      `/surveys?userId=${encodeURIComponent(userId)}&level=${encodeURIComponent(
+        level
+      )}&error=${encodeURIComponent('Could not update survey')}`
+    );
+  }
+});
+
+app.post('/surveys/manage', requireLogin, async (req, res) => {
+  const { userId, level } = req;
+  if (!isManager(level)) return res.status(403).send('Only managers can manage surveys.');
+
+  const {
+    registration_id,
+    survey_satisfaction_score,
+    survey_usefulness_score,
+    survey_instructor_score,
+    survey_recommendation_score,
+    survey_overall_score,
+    survey_comments,
+  } = req.body;
+
+  if (!registration_id) {
+    return res.redirect(
+      `/surveys?userId=${encodeURIComponent(userId)}&level=${encodeURIComponent(
+        level
+      )}&error=${encodeURIComponent('Registration ID required')}`
+    );
+  }
+
+  try {
+    const existingResult = await db.query(
+      'SELECT registration_id FROM registration WHERE registration_id = ?',
+      [registration_id]
+    );
+    const existingRows = existingResult.rows || existingResult;
+    if (!existingRows || existingRows.length === 0) {
+      return res.redirect(
+        `/surveys?userId=${encodeURIComponent(userId)}&level=${encodeURIComponent(
+          level
+        )}&error=${encodeURIComponent('Registration not found')}`
+      );
+    }
+
+    const recommendationNum = numberOrNull(survey_recommendation_score);
+    let surveyBucket = null;
+    if (recommendationNum !== null) {
+      if (recommendationNum >= 4) surveyBucket = 'Promoter';
+      else if (recommendationNum >= 3) surveyBucket = 'Passive';
+      else surveyBucket = 'Detractor';
+    }
+
+    await db.query(
+      `
+      UPDATE registration
+         SET survey_satisfaction_score = ?,
+             survey_usefulness_score = ?,
+             survey_instructor_score = ?,
+             survey_recommendation_score = ?,
+             survey_overall_score = ?,
+             survey_nps_bucket = ?,
+             survey_comments = ?,
+             survey_submission_date = NOW()
+       WHERE registration_id = ?
+      `,
+      [
+        numberOrNull(survey_satisfaction_score),
+        numberOrNull(survey_usefulness_score),
+        numberOrNull(survey_instructor_score),
+        recommendationNum,
+        numberOrNull(survey_overall_score),
+        surveyBucket,
+        survey_comments || null,
+        registration_id,
+      ]
+    );
+
+    res.redirect(
+      `/surveys?userId=${encodeURIComponent(userId)}&level=${encodeURIComponent(
+        level
+      )}&notice=${encodeURIComponent('Survey added')}`
+    );
+  } catch (err) {
+    console.error('Add survey error', err);
+    res.redirect(
+      `/surveys?userId=${encodeURIComponent(userId)}&level=${encodeURIComponent(
+        level
+      )}&error=${encodeURIComponent('Could not add survey')}`
+    );
   }
 });
 
@@ -880,16 +1752,18 @@ app.post('/milestones/delete/:milestone_id', requireLogin, async (req, res) => {
 // ----------- DONATIONS (internal list + public donation page) ------------
 // donation(donation_id, participant_email, user_donation_number, donation_date, donation_amount)
 
-// ---------- Internal Donations List (viewable by anyone, with search) ----------
+// ---------- Internal Donations List ----------
 app.get('/donations', async (req, res) => {
-  const userId = req.query.userId || null;
-  const level = req.query.level || 'U';
+  const userId = req.query.userId || req.session.userId || null;
+  const level = req.query.level || req.session.level || 'U';
   const q = req.query.q;
 
+  // Base select
   let sql = `
     SELECT d.donation_id,
            d.participant_email,
            d.donation_date,
+           TO_CHAR(d.donation_date, 'YYYY-MM-DD') AS donation_date_fmt,
            d.donation_amount,
            p.participant_first_name,
            p.participant_last_name
@@ -898,15 +1772,28 @@ app.get('/donations', async (req, res) => {
       ON p.participant_email = d.participant_email
   `;
   const params = [];
+  const whereParts = [];
+
+  // If user, restrict to their email
+  if (level !== 'M' && userId) {
+    whereParts.push('d.participant_email = ?');
+    params.push(userId);
+  }
 
   if (q) {
-    sql += `
-      WHERE p.participant_first_name ILIKE ?
-         OR p.participant_last_name ILIKE ?
-         OR d.participant_email ILIKE ?
-    `;
+    whereParts.push(`
+      (
+        p.participant_first_name ILIKE ?
+        OR p.participant_last_name ILIKE ?
+        OR d.participant_email ILIKE ?
+      )
+    `);
     const like = '%' + q + '%';
     params.push(like, like, like);
+  }
+
+  if (whereParts.length > 0) {
+    sql += ' WHERE ' + whereParts.join(' AND ');
   }
 
   sql += ' ORDER BY d.donation_date DESC';
@@ -1019,7 +1906,7 @@ app.post('/donate', async (req, res) => {
   const { name, email, amount } = req.body;
 
   try {
-    // 1) Try to insert/ensure participant exists (very simple; ignore if fails)
+    // 1) Try to insert/ensure participant exists (store full name in first_name)
     try {
       await db.query(
         `INSERT INTO participant
@@ -1028,21 +1915,37 @@ app.post('/donate', async (req, res) => {
         [email, name]
       );
     } catch (innerErr) {
-      console.warn(
-        'Participant insert (public donate) warning:',
-        innerErr.message
-      );
+      // Likely duplicate; safe to continue
+      console.warn('Participant insert (public donate) warning:', innerErr.message);
     }
 
-    // 2) Insert donation tied to the participant_email
+    // 2) Compute next donation_id (manual for compatibility) and per-user donation number
+    const nextIdResult = await db.query(
+      'SELECT COALESCE(MAX(donation_id), 0) + 1 AS next_id FROM donation',
+      []
+    );
+    const nextDonationId =
+      (nextIdResult.rows && nextIdResult.rows[0] && nextIdResult.rows[0].next_id) || 1;
+
+    const nextUserNumResult = await db.query(
+      'SELECT COALESCE(MAX(user_donation_number), 0) + 1 AS next_num FROM donation WHERE participant_email = ?',
+      [email]
+    );
+    const nextUserDonationNumber =
+      (nextUserNumResult.rows &&
+        nextUserNumResult.rows[0] &&
+        nextUserNumResult.rows[0].next_num) ||
+      1;
+
+    // 3) Insert donation tied to the participant_email
     await db.query(
       `INSERT INTO donation
-         (participant_email, user_donation_number, donation_date, donation_amount)
-       VALUES (?,?, CURRENT_DATE, ?)`,
-      [email, 1, amount]
+         (donation_id, participant_email, user_donation_number, donation_date, donation_amount)
+       VALUES (?,?,?, CURRENT_DATE, ?)`,
+      [nextDonationId, email, nextUserDonationNumber, amount]
     );
 
-    // 3) Show success message
+    // 4) Show success message
     res.render('donatePublic', {
       success: 'Thank you for your generous support!',
       error: null,

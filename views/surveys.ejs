@@ -10,7 +10,12 @@
 
     <!-- Header -->
     <header class="d-flex justify-content-between align-items-center mb-3">
-      <h1 class="h4 mb-0">Post-event Surveys</h1>
+      <div>
+        <p class="text-uppercase text-muted small mb-1">Surveys</p>
+        <h1 class="h4 mb-0">
+          <%= viewMode === 'manage' ? 'Survey Management' : (viewMode === 'take' ? 'Take Survey' : 'My Event Surveys') %>
+        </h1>
+      </div>
 
       <div>
         <small class="me-3">
@@ -23,53 +28,230 @@
       </div>
     </header>
 
-    <!-- Search Form -->
-    <form class="row g-2 mb-3" method="GET" action="/surveys">
-      <input type="hidden" name="userId" value="<%= loggedInUserId %>">
-      <input type="hidden" name="level" value="<%= loggedInLevel %>">
+    <% if (notice) { %>
+      <div class="alert alert-success alert-dismissible fade show" role="alert">
+        <%= notice %>
+        <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+      </div>
+    <% } %>
+    <% if (error) { %>
+      <div class="alert alert-danger alert-dismissible fade show" role="alert">
+        <%= error %>
+        <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+      </div>
+    <% } %>
 
-      <div class="col-sm-4">
-        <input class="form-control" name="q"
-               placeholder="Search by ID, participant, event, or comments"
-               value="<%= search %>">
+    <% if (viewMode === 'take' && surveyTarget) { %>
+      <div class="card shadow-sm">
+        <div class="card-body">
+          <p class="text-muted mb-1">Event</p>
+          <h2 class="h5"><%= surveyTarget.event_name %></h2>
+          <p class="mb-3">
+            <%= surveyTarget.event_datetime_start ? new Date(surveyTarget.event_datetime_start).toLocaleString() : '' %>
+          </p>
+
+          <form method="POST" action="/surveys/submit/<%= surveyTarget.registration_id %>?userId=<%= loggedInUserId %>&level=<%= loggedInLevel %>">
+            <div class="row g-3">
+              <div class="col-md-6">
+                <label class="form-label">Satisfaction (1-5)</label>
+                <input type="number" min="1" max="5" class="form-control" name="survey_satisfaction_score" value="<%= surveyTarget.survey_satisfaction_score || '' %>">
+              </div>
+              <div class="col-md-6">
+                <label class="form-label">Usefulness (1-5)</label>
+                <input type="number" min="1" max="5" class="form-control" name="survey_usefulness_score" value="<%= surveyTarget.survey_usefulness_score || '' %>">
+              </div>
+              <div class="col-md-6">
+                <label class="form-label">Instructor (1-5)</label>
+                <input type="number" min="1" max="5" class="form-control" name="survey_instructor_score" value="<%= surveyTarget.survey_instructor_score || '' %>">
+              </div>
+              <div class="col-md-6">
+                <label class="form-label">Recommendation (1-5)</label>
+                <input type="number" min="1" max="5" class="form-control" name="survey_recommendation_score" value="<%= surveyTarget.survey_recommendation_score || '' %>">
+              </div>
+              <div class="col-md-6">
+                <label class="form-label">Overall Score (1-5)</label>
+                <input type="number" min="1" max="5" class="form-control" name="survey_overall_score" value="<%= surveyTarget.survey_overall_score || '' %>">
+              </div>
+              <div class="col-12">
+                <label class="form-label">Comments</label>
+                <textarea class="form-control" name="survey_comments" rows="3" placeholder="What worked well?"><%= surveyTarget.survey_comments || '' %></textarea>
+              </div>
+            </div>
+            <div class="d-flex justify-content-between align-items-center mt-3">
+              <a class="btn btn-outline-secondary" href="/surveys?userId=<%= loggedInUserId %>&level=<%= loggedInLevel %>">Back</a>
+              <button type="submit" class="btn btn-primary">Submit survey</button>
+            </div>
+          </form>
+        </div>
+      </div>
+    <% } else if (viewMode === 'user') { %>
+
+      <p class="text-muted mb-3">
+        View your registered events and submit surveys once you have attended.
+      </p>
+
+      <% if (myRegistrations.length === 0) { %>
+        <div class="alert alert-info">You have not registered for any events yet.</div>
+      <% } else { %>
+        <div class="row g-3">
+          <% myRegistrations.forEach(r => { %>
+            <div class="col-md-6">
+              <div class="card shadow-sm h-100">
+                <div class="card-body d-flex flex-column">
+                  <div class="d-flex justify-content-between align-items-start mb-2">
+                    <div>
+                      <p class="text-muted small mb-1">Event</p>
+                      <h2 class="h6 mb-1"><%= r.event_name %></h2>
+                      <p class="mb-1"><%= r.event_datetime_start ? new Date(r.event_datetime_start).toLocaleString() : 'Date TBD' %></p>
+                      <p class="text-muted small mb-3"><%= r.event_location || '' %></p>
+                    </div>
+                    <% if (r.survey_submission_date) { %>
+                      <span class="badge text-bg-success">Submitted</span>
+                    <% } else { %>
+                      <span class="badge text-bg-warning">Pending</span>
+                    <% } %>
+                  </div>
+                  <div class="mt-auto d-flex justify-content-between align-items-center">
+                    <div class="text-muted small">
+                      Reg #<%= r.registration_id %>
+                    </div>
+                    <a class="btn btn-primary btn-sm" href="/surveys/take/<%= r.registration_id %>?userId=<%= loggedInUserId %>&level=<%= loggedInLevel %>">
+                      <%= r.survey_submission_date ? 'Update survey' : 'Take survey' %>
+                    </a>
+                  </div>
+                </div>
+              </div>
+            </div>
+          <% }); %>
+        </div>
+      <% } %>
+
+    <% } else { %>
+      <!-- Manager view -->
+      <div class="mb-3">
+        <form class="row g-2" method="GET" action="/surveys">
+          <input type="hidden" name="userId" value="<%= loggedInUserId %>">
+          <input type="hidden" name="level" value="<%= loggedInLevel %>">
+          <div class="col-sm-4">
+            <input class="form-control" name="q"
+                   placeholder="Search by ID, participant, event, or comments"
+                   value="<%= search %>">
+          </div>
+          <div class="col-sm-auto">
+            <button class="btn btn-outline-primary" type="submit">Search</button>
+          </div>
+        </form>
       </div>
 
-      <div class="col-sm-auto">
-        <button class="btn btn-outline-primary" type="submit">Search</button>
+      <div class="card shadow-sm mb-4">
+        <div class="card-body">
+          <h2 class="h6 mb-3">Add / overwrite survey for a registration</h2>
+          <form class="row g-3" method="POST" action="/surveys/manage?userId=<%= loggedInUserId %>&level=<%= loggedInLevel %>">
+            <div class="col-sm-3">
+              <label class="form-label">Registration ID</label>
+              <input type="number" required class="form-control" name="registration_id" placeholder="123">
+            </div>
+            <div class="col-sm-3">
+              <label class="form-label">Satisfaction</label>
+              <input type="number" min="1" max="5" class="form-control" name="survey_satisfaction_score">
+            </div>
+            <div class="col-sm-3">
+              <label class="form-label">Usefulness</label>
+              <input type="number" min="1" max="5" class="form-control" name="survey_usefulness_score">
+            </div>
+            <div class="col-sm-3">
+              <label class="form-label">Instructor</label>
+              <input type="number" min="1" max="5" class="form-control" name="survey_instructor_score">
+            </div>
+            <div class="col-sm-3">
+              <label class="form-label">Recommendation (1-5)</label>
+              <input type="number" min="1" max="5" class="form-control" name="survey_recommendation_score">
+            </div>
+            <div class="col-sm-3">
+              <label class="form-label">Overall</label>
+              <input type="number" min="1" max="5" class="form-control" name="survey_overall_score">
+            </div>
+            <div class="col-sm-6">
+              <label class="form-label">Comments</label>
+              <input type="text" class="form-control" name="survey_comments" placeholder="Notes or follow up">
+            </div>
+            <div class="col-12 d-flex justify-content-end">
+              <button type="submit" class="btn btn-success">Save survey</button>
+            </div>
+          </form>
+        </div>
       </div>
-    </form>
 
-    <p class="text-muted mb-3">
-      View aggregated survey responses submitted by participants.
-    </p>
-
-    <!-- Table -->
-    <table class="table table-striped table-hover bg-white shadow-sm">
-      <thead>
-        <tr>
-          <th>Survey ID</th>
-          <th>Participant Email</th>
-          <th>Event Name</th>
-          <th>Event Date</th>
-          <th>Overall Score</th>
-          <th>Comments</th>
-        </tr>
-      </thead>
-
-      <tbody>
-        <% surveys.forEach(s => { %>
-          <tr>
-            <td><%= s.registration_id %></td>
-            <td><%= s.participant_email %></td>
-            <td><%= s.event_name %></td>
-            <td><%= s.event_datetime_start ? new Date(s.event_datetime_start).toLocaleString() : '' %></td>
-            <td><%= s.survey_overall_score %></td>
-            <td><%= s.survey_comments %></td>
-          </tr>
-        <% }) %>
-      </tbody>
-    </table>
+      <p class="text-muted mb-2">Existing survey data</p>
+      <div class="table-responsive shadow-sm">
+        <table class="table table-striped table-hover bg-white align-middle mb-0">
+          <thead>
+            <tr>
+              <th>Reg #</th>
+              <th>Participant</th>
+              <th>Event</th>
+              <th>Date</th>
+              <th class="text-center">Sat</th>
+              <th class="text-center">Useful</th>
+              <th class="text-center">Instructor</th>
+              <th class="text-center">Recommend</th>
+              <th class="text-center">Overall</th>
+              <th>Comments</th>
+              <th class="text-center">Submitted</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            <% if (surveys.length === 0) { %>
+              <tr>
+                <td colspan="12" class="text-center text-muted py-4">No survey data found.</td>
+              </tr>
+            <% } %>
+            <% surveys.forEach(s => { const formId = `survey-form-${s.registration_id}`; %>
+              <form id="<%= formId %>" method="POST" action="/surveys/manage/<%= s.registration_id %>?userId=<%= loggedInUserId %>&level=<%= loggedInLevel %>"></form>
+              <tr>
+                <td class="col"><strong><%= s.registration_id %></strong></td>
+                <td class="col"><%= s.participant_email %></td>
+                <td class="col">
+                  <div class="fw-semibold"><%= s.event_name %></div>
+                  <div class="small text-muted">Instance #<%= s.event_instance_id || '—' %></div>
+                </td>
+                <td class="col"><%= s.event_datetime_start ? new Date(s.event_datetime_start).toLocaleString() : '' %></td>
+                <td class="col text-center">
+                  <input form="<%= formId %>" type="number" min="1" max="5" class="form-control form-control-sm" name="survey_satisfaction_score" value="<%= s.survey_satisfaction_score || '' %>">
+                </td>
+                <td class="col text-center">
+                  <input form="<%= formId %>" type="number" min="1" max="5" class="form-control form-control-sm" name="survey_usefulness_score" value="<%= s.survey_usefulness_score || '' %>">
+                </td>
+                <td class="col text-center">
+                  <input form="<%= formId %>" type="number" min="1" max="5" class="form-control form-control-sm" name="survey_instructor_score" value="<%= s.survey_instructor_score || '' %>">
+                </td>
+                <td class="col text-center">
+                  <input form="<%= formId %>" type="number" min="1" max="5" class="form-control form-control-sm" name="survey_recommendation_score" value="<%= s.survey_recommendation_score || '' %>">
+                </td>
+                <td class="col text-center">
+                  <input form="<%= formId %>" type="number" min="1" max="5" class="form-control form-control-sm" name="survey_overall_score" value="<%= s.survey_overall_score || '' %>">
+                </td>
+                <td class="col">
+                  <input form="<%= formId %>" type="text" class="form-control form-control-sm" name="survey_comments" value="<%= s.survey_comments || '' %>">
+                </td>
+                <td class="col text-center">
+                  <%= s.survey_submission_date ? new Date(s.survey_submission_date).toLocaleString() : '' %>
+                </td>
+                <td class="col text-end">
+                  <div class="btn-group btn-group-sm" role="group">
+                    <button form="<%= formId %>" type="submit" name="action" value="save" class="btn btn-primary">Save</button>
+                    <button form="<%= formId %>" type="submit" name="action" value="delete" class="btn btn-outline-danger">Clear</button>
+                  </div>
+                </td>
+              </tr>
+            <% }); %>
+          </tbody>
+        </table>
+      </div>
+    <% } %>
 
   </div>
+  <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
 </body>
 </html>
