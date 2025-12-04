@@ -2,20 +2,38 @@
 <html>
 <head>
   <meta charset="utf-8" />
-  <title>Website Users - Ella Rises</title>
+  <title>Portal Users - Ella Rises</title>
   <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=DM+Serif+Display:ital@0;1&family=Montserrat:wght@400;600;700&display=swap" rel="stylesheet">
+  <style>
+    body { background: #fff7f4; font-family: 'Montserrat', sans-serif; color: #1f1f1f; }
+    h1, h2, h3, h4, h5, h6 { font-family: 'DM Serif Display', serif; color: #1f1f1f; }
+    .btn-primary { background-color: #9AB59D; border-color: #9AB59D; color: #0f1c10; }
+    .btn-primary:hover { background-color: #839c85; border-color: #839c85; color: #0f1c10; }
+    .btn-success { background-color: #F9AFB1; border-color: #F9AFB1; color: #1f1f1f; }
+    .btn-success:hover { background-color: #f3898e; border-color: #f3898e; color: #1f1f1f; }
+    .card { border: none; border-radius: 12px; box-shadow: 0 6px 18px rgba(0,0,0,0.08); }
+    .table > :not(caption) > * > * { background-color: #fff; }
+    .ribbon {
+      background: linear-gradient(90deg, #FFD8D1, #F9AFB1);
+      padding: 12px 16px;
+      border-radius: 12px;
+      box-shadow: 0 8px 24px rgba(0,0,0,0.08);
+    }
+  </style>
 </head>
 
 <body class="bg-light">
 <div class="container py-4">
 
-  <!-- Header -->
-  <header class="d-flex justify-content-between align-items-center mb-3">
-    <h1 class="h4 mb-0">Website Users</h1>
-    <div>
-      <small class="me-3">
-        Logged in as <strong><%= loggedInLevel === 'M' ? 'Manager' : 'User' %></strong>
-      </small>
+  <!-- Ribbon header -->
+  <header class="ribbon d-flex flex-column flex-lg-row align-items-lg-center gap-2 mb-3">
+    <div class="d-flex align-items-center gap-2">
+      <img src="/images/logo.png" alt="Ella Rises logo" style="height:56px; width:auto;">
+      <h1 class="h4 mb-0">Portal Users</h1>
+    </div>
+    <div class="ms-lg-auto d-flex align-items-center gap-2 flex-wrap">
+      <small class="me-2">Logged in as <strong><%= loggedInLevel === 'M' ? 'Manager' : loggedInUserId %></strong></small>
       <a href="/landing?userId=<%= loggedInUserId %>&level=<%= loggedInLevel %>"
          class="btn btn-outline-secondary btn-sm">
         Back to dashboard
@@ -30,24 +48,9 @@
     <% } %>
 
   <!-- Search -->
-  <form class="row g-2 mb-3" method="GET" action="/users">
-    <input type="hidden" name="userId" value="<%= loggedInUserId %>">
-    <input type="hidden" name="level" value="<%= loggedInLevel %>">
-
-    <div class="col-sm-4">
-      <input class="form-control" name="q"
-             placeholder="Search email or role"
-             value="<%= search %>">
-    </div>
-
-    <div class="col-sm-auto">
-      <button class="btn btn-outline-primary" type="submit">Search</button>
-    </div>
-  </form>
-
   <!-- Add User -->
   <div class="card mb-4">
-    <div class="card-header">Add website user</div>
+    <div class="card-header">Add Portal User</div>
     <div class="card-body">
       <form method="POST"
             action="/users/add?userId=<%= loggedInUserId %>&level=<%= loggedInLevel %>"
@@ -78,6 +81,21 @@
     </div>
   </div>
 
+  <form class="row g-2 mb-3" method="GET" action="/users">
+    <input type="hidden" name="userId" value="<%= loggedInUserId %>">
+    <input type="hidden" name="level" value="<%= loggedInLevel %>">
+
+    <div class="col-sm-4">
+      <input class="form-control" name="q"
+             placeholder="Search email or role"
+             value="<%= search %>">
+    </div>
+
+    <div class="col-sm-auto">
+      <button class="btn btn-outline-primary" type="submit">Search</button>
+    </div>
+  </form>
+
   <!-- User List -->
   <table class="table table-striped table-hover bg-white shadow-sm">
     <thead>
@@ -85,7 +103,7 @@
         <th>Email</th>
         <th>Password</th>
         <th>Role</th>
-        <th style="width: 230px;">Actions</th>
+        <th style="width: 420px;">Edit Password & Level</th>
       </tr>
     </thead>
 
@@ -94,39 +112,33 @@
         <tr>
           <td><%= u.participant_email %></td>
           <td><%= u.password %></td>
-          <td><%= u.user_level %></td>
+          <td><%= u.user_level === 'M' ? 'Manager' : 'User' %></td>
 
           <td>
-
-            <!-- Edit User -->
-            <form method="POST"
-                  action="/users/edit/<%= u.participant_email %>?userId=<%= loggedInUserId %>&level=<%= loggedInLevel %>"
-                  class="row g-1 mb-1">
-
-              <div class="col-md-4">
+            <div class="d-flex align-items-center gap-2 flex-nowrap">
+              <!-- Edit User -->
+              <form method="POST"
+                    action="/users/edit/<%= u.participant_email %>?userId=<%= loggedInUserId %>&level=<%= loggedInLevel %>"
+                    class="d-flex align-items-center gap-2 flex-nowrap">
                 <input name="password" class="form-control form-control-sm"
-                       value="<%= u.password %>" required>
-              </div>
+                       value="<%= u.password %>" required style="min-width: 140px;">
 
-              <div class="col-md-4">
-                <select name="user_level" class="form-select form-select-sm" required>
+                <select name="user_level" class="form-select form-select-sm" required style="min-width: 110px;">
                   <option value="M" <%= u.user_level === 'M' ? 'selected' : '' %>>Manager</option>
                   <option value="U" <%= u.user_level === 'U' ? 'selected' : '' %>>User</option>
                 </select>
-              </div>
 
-              <div class="col-md-4 d-grid">
                 <button class="btn btn-sm btn-primary" type="submit">Save</button>
-              </div>
-            </form>
+              </form>
 
-            <!-- Delete User -->
-            <form method="POST"
-                  action="/users/delete/<%= u.participant_email %>?userId=<%= loggedInUserId %>&level=<%= loggedInLevel %>"
-                  onsubmit="return confirm('Delete this user?')">
-              <button class="btn btn-sm btn-outline-danger" type="submit">Delete</button>
-            </form>
-
+              <!-- Delete User -->
+              <form method="POST"
+                    action="/users/delete/<%= u.participant_email %>?userId=<%= loggedInUserId %>&level=<%= loggedInLevel %>"
+                    onsubmit="return confirm('Delete this user?')"
+                    class="d-inline">
+                <button class="btn btn-sm btn-outline-danger" type="submit">Delete</button>
+              </form>
+            </div>
           </td>
         </tr>
       <% }) %>

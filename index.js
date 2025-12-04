@@ -9,6 +9,8 @@ const app = express();
 app.set('view engine', 'ejs');
 app.set('views', __dirname + '/views');
 app.use(express.urlencoded({ extended: true }));
+// Static assets (e.g., images)
+app.use('/images', express.static(__dirname + '/images'));
 app.use(
   session({
     secret: process.env.SESSION_SECRET || 'ella-rises-secret',
@@ -382,9 +384,13 @@ app.post('/users/delete/:participant_email', requireLogin, async (req, res) => {
 // ---------- Participants ----------
 // participant(participant_email, participant_first_name, participant_last_name, ...)
 app.get('/participants', async (req, res) => {
-  const userId = req.query.userId || null;
-  const level = req.query.level || null; // 'M', 'U', or null (visitor)
+  const userId = req.query.userId || req.session.userId || null;
+  const level = req.query.level || req.session.level || null; // 'M', 'U', or null (visitor)
   const q = req.query.q;
+  const page = Math.max(1, parseInt(req.query.page || '1', 10));
+  const limit = 20;
+  const limitPlusOne = limit + 1;
+  const offset = (page - 1) * limit;
 
   const params = [];
 
@@ -444,17 +450,25 @@ app.get('/participants', async (req, res) => {
     ORDER BY
       p.participant_last_name,
       p.participant_first_name
+    LIMIT ?
+    OFFSET ?
   `;
+  params.push(limitPlusOne, offset);
 
   try {
     const result = await db.query(sql, params);
     const rows = result.rows || result;
+    const hasNext = rows.length > limit;
+    const participants = hasNext ? rows.slice(0, limit) : rows;
 
     res.render('participants', {
       loggedInUserId: userId,
       loggedInLevel: level,
-      participants: rows,
+      participants,
       search: q || '',
+      page,
+      hasNext,
+      hasPrev: page > 1,
     });
   } catch (err) {
     console.error('Participants error', err);
@@ -463,6 +477,9 @@ app.get('/participants', async (req, res) => {
       loggedInLevel: level,
       participants: [],
       search: q || '',
+      page,
+      hasNext: false,
+      hasPrev: page > 1,
     });
   }
 });
@@ -575,10 +592,32 @@ app.get('/participants/edit/:participant_email', requireLogin, async (req, res) 
 
     const participant = rows[0];
 
+    const donationsResult = await db.query(
+      `SELECT COALESCE(SUM(donation_amount),0) AS total_donations
+         FROM donation
+        WHERE participant_email = ?`,
+      [participant_email]
+    );
+    const totalDonations =
+      (donationsResult.rows && donationsResult.rows[0] && donationsResult.rows[0].total_donations) || 0;
+
+    const milestonesResult = await db.query(
+      `SELECT milestone_id,
+              milestone_title,
+              TO_CHAR(milestone_date, 'YYYY-MM-DD') AS milestone_date
+         FROM milestone
+        WHERE participant_email = ?
+        ORDER BY milestone_date DESC, milestone_id DESC`,
+      [participant_email]
+    );
+    const milestones = milestonesResult.rows || milestonesResult;
+
     res.render('participantsEdit', {
       loggedInUserId: userId,
       loggedInLevel: level,
       participant,
+      totalDonations,
+      milestones,
     });
   } catch (err) {
     console.error('Edit participant (GET) error', err);
@@ -650,6 +689,12 @@ app.post('/participants/delete/:participant_email', requireLogin, async (req, re
   const { participant_email } = req.params;
 
   try {
+    // Remove dependent records first to satisfy FK constraints
+    await db.query('DELETE FROM milestone WHERE participant_email = ?', [participant_email]);
+    await db.query('DELETE FROM registration WHERE participant_email = ?', [participant_email]);
+    await db.query('DELETE FROM donation WHERE participant_email = ?', [participant_email]);
+    await db.query('DELETE FROM users WHERE participant_email = ?', [participant_email]);
+
     await db.query(
       'DELETE FROM participant WHERE participant_email = ?',
       [participant_email]
@@ -667,6 +712,10 @@ app.get('/events', async (req, res) => {
   const userId = req.query.userId || req.session.userId || null;
   const level = req.query.level || req.session.level || 'U';
   const q = req.query.q;
+  const page = Math.max(1, parseInt(req.query.page || '1', 10));
+  const limit = 20;
+  const limitPlusOne = limit + 1;
+  const offset = (page - 1) * limit;
   const managerView = isManager(level);
 
   try {
@@ -710,7 +759,8 @@ app.get('/events', async (req, res) => {
         instanceSql += ' WHERE ' + whereParts.join(' AND ');
       }
 
-      instanceSql += ' ORDER BY ei.event_datetime_start';
+      instanceSql += ' ORDER BY ei.event_datetime_start LIMIT ? OFFSET ?';
+      instanceParams.push(limitPlusOne, offset);
 
       const eventsSql = `
         SELECT event_name,
@@ -727,8 +777,23 @@ app.get('/events', async (req, res) => {
         db.query(eventsSql, []),
       ]);
 
-      eventInstances = instancesResult.rows || instancesResult;
+      const instanceRows = instancesResult.rows || instancesResult;
+      const hasNext = instanceRows.length === limitPlusOne;
+      eventInstances = hasNext ? instanceRows.slice(0, limit) : instanceRows;
       events = eventsResult.rows || eventsResult;
+
+      return res.render('events', {
+        loggedInUserId: userId,
+        loggedInLevel: level,
+        eventInstances,
+        events,
+        search: q || '',
+        myRegistrations,
+        myInstanceIds,
+        page,
+        hasNext,
+        hasPrev: page > 1,
+      });
     } else if (userId) {
       // Users see only their past event registrations
       let mySql = `
@@ -773,6 +838,9 @@ app.get('/events', async (req, res) => {
       search: q || '',
       myRegistrations,
       myInstanceIds,
+      page,
+      hasNext: false,
+      hasPrev: false,
     });
   } catch (err) {
     console.error('Events error', err);
@@ -784,6 +852,9 @@ app.get('/events', async (req, res) => {
       search: q || '',
       myRegistrations: [],
       myInstanceIds: [],
+      page: 1,
+      hasNext: false,
+      hasPrev: false,
     });
   }
 });
@@ -967,6 +1038,48 @@ app.post('/events/:eventInstanceId/signup', requireLogin, async (req, res) => {
 });
 
 // Manager: edit event instance
+app.get('/event_instances/edit/:eventInstanceId', requireLogin, async (req, res) => {
+  const { userId, level } = req.query;
+  if (!isManager(level))
+    return res.status(403).send('Only managers can edit event instances.');
+
+  const { eventInstanceId } = req.params;
+
+  try {
+    const result = await db.query(
+      `
+      SELECT ei.event_instance_id,
+             ei.event_name,
+             e.event_type,
+             e.event_description,
+             ei.event_datetime_start,
+             ei.event_datetime_end,
+             ei.event_location,
+             ei.event_capacity,
+             ei.event_registration_deadline
+        FROM event_instance ei
+        JOIN event e ON e.event_name = ei.event_name
+       WHERE ei.event_instance_id = ?
+      `,
+      [eventInstanceId]
+    );
+    const rows = result.rows || result;
+    if (!rows.length) {
+      return redirectWithUser(res, '/events', userId, level);
+    }
+    const inst = rows[0];
+
+    res.render('eventInstanceEdit', {
+      loggedInUserId: userId,
+      loggedInLevel: level,
+      inst,
+    });
+  } catch (err) {
+    console.error('Load event instance error', err);
+    redirectWithUser(res, '/events', userId, level);
+  }
+});
+
 app.post('/event_instances/edit/:eventInstanceId', requireLogin, async (req, res) => {
   const { userId, level } = req.query;
   if (!isManager(level))
@@ -1015,6 +1128,11 @@ app.post('/event_instances/delete/:eventInstanceId', requireLogin, async (req, r
   const { eventInstanceId } = req.params;
 
   try {
+    // Remove registrations tied to this instance first to satisfy FK, then delete the instance
+    await db.query(
+      'DELETE FROM registration WHERE event_instance_id = ?',
+      [eventInstanceId]
+    );
     await db.query(
       'DELETE FROM event_instance WHERE event_instance_id = ?',
       [eventInstanceId]
@@ -1035,6 +1153,10 @@ app.get('/surveys', requireLogin, async (req, res) => {
   const userId = req.userId;
   const level = req.level;
   const q = req.query.q || '';
+  const page = Math.max(1, parseInt(req.query.page || '1', 10));
+  const limit = 20;
+  const limitPlusOne = limit + 1;
+  const offset = (page - 1) * limit;
   const notice = req.query.notice || '';
   const error = req.query.error || '';
 
@@ -1047,7 +1169,6 @@ app.get('/surveys', requireLogin, async (req, res) => {
                r.participant_email,
                r.event_name,
                r.event_datetime_start,
-               r.event_instance_id,
                r.survey_satisfaction_score,
                r.survey_usefulness_score,
                r.survey_instructor_score,
@@ -1069,10 +1190,13 @@ app.get('/surveys', requireLogin, async (req, res) => {
         const like = '%' + q + '%';
         params.push(like, like, like, like);
       }
-      sql += ' ORDER BY r.event_datetime_start DESC NULLS LAST, r.registration_id DESC';
+      sql += ' ORDER BY r.event_datetime_start DESC NULLS LAST, r.registration_id DESC LIMIT ? OFFSET ?';
+      params.push(limitPlusOne, offset);
 
       const surveysResult = await db.query(sql, params);
-      const surveys = surveysResult.rows || surveysResult;
+      const rows = surveysResult.rows || surveysResult;
+      const hasNext = rows.length > limit;
+      const surveys = hasNext ? rows.slice(0, limit) : rows;
 
       res.render('surveys', {
         loggedInUserId: userId,
@@ -1084,6 +1208,9 @@ app.get('/surveys', requireLogin, async (req, res) => {
         search: q,
         notice,
         error,
+        page,
+        hasNext,
+        hasPrev: page > 1,
       });
     } else {
       const myRegsResult = await db.query(
@@ -1115,6 +1242,9 @@ app.get('/surveys', requireLogin, async (req, res) => {
         search: '',
         notice,
         error,
+        page: 1,
+        hasNext: false,
+        hasPrev: false,
       });
     }
   } catch (err) {
@@ -1129,6 +1259,9 @@ app.get('/surveys', requireLogin, async (req, res) => {
       search: q,
       notice: '',
       error: 'There was a problem loading survey data.',
+      page,
+      hasNext: false,
+      hasPrev: page > 1,
     });
   }
 });
@@ -1451,7 +1584,7 @@ app.get('/milestones', async (req, res) => {
       m.participant_email,
       m.user_milestone_number,
       m.milestone_title,
-      TO_CHAR(m.milestone_date, 'YYYY-MM-DD') AS milestone_date,
+      TO_CHAR(m.milestone_date, 'MM-DD-YYYY') AS milestone_date,
       p.participant_first_name,
       p.participant_last_name
     FROM milestone m
@@ -1499,6 +1632,7 @@ app.get('/milestones', async (req, res) => {
       loggedInLevel: level,
       milestones: rows,
       search: q || '',
+      error: req.query.error || null,
     });
   } catch (err) {
     console.error('Milestones error', err);
@@ -1507,6 +1641,7 @@ app.get('/milestones', async (req, res) => {
       loggedInLevel: level,
       milestones: [],
       search: q || '',
+      error: 'no existing participant.',
     });
   }
 });
@@ -1564,7 +1699,7 @@ app.post('/milestones/add', requireLogin, async (req, res) => {
     redirectWithUser(res, '/milestones', userId, level);
   } catch (err) {
     console.error('Add milestone error', err);
-    redirectWithUser(res, '/milestones', userId, level);
+    redirectWithUser(res, '/milestones?error=1', userId, level);
   }
 });
 
@@ -1673,6 +1808,10 @@ app.get('/donations', async (req, res) => {
   const userId = req.query.userId || req.session.userId || null;
   const level = req.query.level || req.session.level || 'U';
   const q = req.query.q;
+  const page = Math.max(1, parseInt(req.query.page || '1', 10));
+  const limit = 20;
+  const limitPlusOne = limit + 1;
+  const offset = (page - 1) * limit;
 
   // Base select
   let sql = `
@@ -1697,15 +1836,26 @@ app.get('/donations', async (req, res) => {
   }
 
   if (q) {
-    whereParts.push(`
-      (
-        p.participant_first_name ILIKE ?
-        OR p.participant_last_name ILIKE ?
-        OR d.participant_email ILIKE ?
-      )
-    `);
-    const like = '%' + q + '%';
-    params.push(like, like, like);
+    if (level === 'M') {
+      whereParts.push(`
+        (
+          p.participant_first_name ILIKE ?
+          OR p.participant_last_name ILIKE ?
+          OR d.participant_email ILIKE ?
+        )
+      `);
+      const like = '%' + q + '%';
+      params.push(like, like, like);
+    } else {
+      whereParts.push(`
+        (
+          TO_CHAR(d.donation_date, 'YYYY-MM-DD') ILIKE ?
+          OR CAST(d.donation_amount AS TEXT) ILIKE ?
+        )
+      `);
+      const like = '%' + q + '%';
+      params.push(like, like);
+    }
   }
 
   if (whereParts.length > 0) {
@@ -1713,6 +1863,10 @@ app.get('/donations', async (req, res) => {
   }
 
   sql += ' ORDER BY d.donation_date DESC';
+  if (level === 'M') {
+    sql += ' LIMIT ? OFFSET ?';
+    params.push(limitPlusOne, offset);
+  }
 
   try {
     const donationsResult = await db.query(sql, params);
@@ -1730,12 +1884,26 @@ app.get('/donations', async (req, res) => {
       participants = pResult.rows;
     }
 
+    const donationRows = donationsResult.rows || donationsResult;
+    let donations = donationRows;
+    let hasNext = false;
+    let hasPrev = false;
+
+    if (level === 'M') {
+      hasNext = donationRows.length > limit;
+      donations = hasNext ? donationRows.slice(0, limit) : donationRows;
+      hasPrev = page > 1;
+    }
+
     res.render('donations', {
       loggedInUserId: userId,
       loggedInLevel: level,
-      donations: donationsResult.rows,
+      donations,
       participants,
       search: q || '',
+      page,
+      hasNext,
+      hasPrev,
     });
   } catch (err) {
     console.error('Donations error', err);
@@ -1745,6 +1913,9 @@ app.get('/donations', async (req, res) => {
       donations: [],
       participants: [],
       search: q || '',
+      page: 1,
+      hasNext: false,
+      hasPrev: false,
     });
   }
 });
@@ -1758,12 +1929,51 @@ app.post('/donations/add', requireLogin, async (req, res) => {
   const { participant_email, donation_amount } = req.body;
 
   try {
-    await db.query(
-      `INSERT INTO donation
-         (participant_email, user_donation_number, donation_date, donation_amount)
-       VALUES (?,?, CURRENT_DATE, ?)`,
-      [participant_email, 1, donation_amount]
+    // Next donation_id
+    const nextIdResult = await db.query(
+      'SELECT COALESCE(MAX(donation_id), 0) + 1 AS next_id FROM donation',
+      []
     );
+    const nextDonationId =
+      (nextIdResult.rows && nextIdResult.rows[0] && nextIdResult.rows[0].next_id) || 1;
+
+    // Next per-user donation number (even if participant doesn't exist)
+    const nextUserNumResult = await db.query(
+      'SELECT COALESCE(MAX(user_donation_number), 0) + 1 AS next_num FROM donation WHERE participant_email = ?',
+      [participant_email]
+    );
+    const nextUserDonationNumber =
+      (nextUserNumResult.rows &&
+        nextUserNumResult.rows[0] &&
+        nextUserNumResult.rows[0].next_num) ||
+      1;
+
+    try {
+      await db.query(
+        `INSERT INTO donation
+           (donation_id, participant_email, user_donation_number, donation_date, donation_amount)
+         VALUES (?,?,?, CURRENT_DATE, ?)`,
+        [nextDonationId, participant_email, nextUserDonationNumber, donation_amount]
+      );
+    } catch (innerErr) {
+      // If a FK exists, allow fallback by creating a minimal participant, then retry
+      if (innerErr && innerErr.code === '23503') {
+        await db.query(
+          `INSERT INTO participant (participant_email, participant_first_name, participant_role)
+           VALUES (?, ?, 'Donor')
+           ON CONFLICT (participant_email) DO NOTHING`,
+          [participant_email, participant_email]
+        );
+        await db.query(
+          `INSERT INTO donation
+             (donation_id, participant_email, user_donation_number, donation_date, donation_amount)
+           VALUES (?,?,?, CURRENT_DATE, ?)`,
+          [nextDonationId, participant_email, nextUserDonationNumber, donation_amount]
+        );
+      } else {
+        throw innerErr;
+      }
+    }
     redirectWithUser(res, '/donations', userId, level);
   } catch (err) {
     console.error('Add donation error', err);
@@ -1822,20 +2032,7 @@ app.post('/donate', async (req, res) => {
   const { name, email, amount } = req.body;
 
   try {
-    // 1) Try to insert/ensure participant exists (store full name in first_name)
-    try {
-      await db.query(
-        `INSERT INTO participant
-           (participant_email, participant_first_name)
-         VALUES (?,?)`,
-        [email, name]
-      );
-    } catch (innerErr) {
-      // Likely duplicate; safe to continue
-      console.warn('Participant insert (public donate) warning:', innerErr.message);
-    }
-
-    // 2) Compute next donation_id (manual for compatibility) and per-user donation number
+    // 1) Compute next donation_id (manual for compatibility) and per-user donation number
     const nextIdResult = await db.query(
       'SELECT COALESCE(MAX(donation_id), 0) + 1 AS next_id FROM donation',
       []
@@ -1853,13 +2050,33 @@ app.post('/donate', async (req, res) => {
         nextUserNumResult.rows[0].next_num) ||
       1;
 
-    // 3) Insert donation tied to the participant_email
-    await db.query(
-      `INSERT INTO donation
-         (donation_id, participant_email, user_donation_number, donation_date, donation_amount)
-       VALUES (?,?,?, CURRENT_DATE, ?)`,
-      [nextDonationId, email, nextUserDonationNumber, amount]
-    );
+    // 2) Insert donation tied to the participant_email (participant may or may not exist)
+    try {
+      await db.query(
+        `INSERT INTO donation
+           (donation_id, participant_email, user_donation_number, donation_date, donation_amount)
+         VALUES (?,?,?, CURRENT_DATE, ?)`,
+        [nextDonationId, email, nextUserDonationNumber, amount]
+      );
+    } catch (innerErr) {
+      // If there's a FK constraint, create a minimal participant record as a fallback
+      if (innerErr && innerErr.code === '23503') {
+        await db.query(
+          `INSERT INTO participant (participant_email, participant_first_name, participant_role)
+           VALUES (?, ?, 'Donor')
+           ON CONFLICT (participant_email) DO NOTHING`,
+          [email, name || email]
+        );
+        await db.query(
+          `INSERT INTO donation
+             (donation_id, participant_email, user_donation_number, donation_date, donation_amount)
+           VALUES (?,?,?, CURRENT_DATE, ?)`,
+          [nextDonationId, email, nextUserDonationNumber, amount]
+        );
+      } else {
+        throw innerErr;
+      }
+    }
 
     // 4) Show success message
     res.render('donatePublic', {
@@ -1874,6 +2091,11 @@ app.post('/donate', async (req, res) => {
       error: 'There was an error processing your donation. Please try again.',
     });
   }
+});
+
+// Fun Easter egg: return a 418 teapot
+app.get('/teapot', (req, res) => {
+  res.status(418).send("I'm a teapot");
 });
 
 // ---------- Default route ----------

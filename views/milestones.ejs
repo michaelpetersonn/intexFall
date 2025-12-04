@@ -4,19 +4,39 @@
   <meta charset="utf-8" />
   <title>Milestones - Ella Rises</title>
   <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=DM+Serif+Display:ital@0;1&family=Montserrat:wght@400;600;700&display=swap" rel="stylesheet">
+  <style>
+    body { background: #fff7f4; font-family: 'Montserrat', sans-serif; color: #1f1f1f; }
+    h1, h2, h3, h4, h5, h6 { font-family: 'DM Serif Display', serif; color: #1f1f1f; }
+    .btn-primary { background-color: #9AB59D; border-color: #9AB59D; color: #0f1c10; }
+    .btn-primary:hover { background-color: #839c85; border-color: #839c85; color: #0f1c10; }
+    .btn-success { background-color: #F9AFB1; border-color: #F9AFB1; color: #1f1f1f; }
+    .btn-success:hover { background-color: #f3898e; border-color: #f3898e; color: #1f1f1f; }
+    .card { border: none; border-radius: 12px; box-shadow: 0 6px 18px rgba(0,0,0,0.08); }
+    .table > :not(caption) > * > * { background-color: #fff; }
+    .ribbon {
+      background: linear-gradient(90deg, #FFD8D1, #F9AFB1);
+      padding: 12px 16px;
+      border-radius: 12px;
+      box-shadow: 0 8px 24px rgba(0,0,0,0.08);
+    }
+  </style>
 </head>
 <body class="bg-light">
   <div class="container py-4">
 
-    <header class="d-flex justify-content-between align-items-center mb-3">
-      <h1 class="h4 mb-0">Milestones</h1>
-      <div>
-        <small class="me-3">
+    <header class="ribbon d-flex flex-column flex-lg-row align-items-lg-center gap-2 mb-3">
+      <div class="d-flex align-items-center gap-2">
+        <img src="/images/logo.png" alt="Ella Rises logo" style="height:56px; width:auto;">
+        <h1 class="h4 mb-0"><%= loggedInLevel === 'M' ? 'Milestones' : 'My Milestones' %></h1>
+      </div>
+      <div class="ms-lg-auto d-flex align-items-center gap-2 flex-wrap">
+        <small class="me-2">
           Logged in as
           <strong>
             <%= loggedInLevel === 'M'
                   ? 'Manager'
-                  : (loggedInLevel === 'U' ? 'User' : 'Visitor') %>
+                  : (loggedInUserId || 'User') %>
           </strong>
         </small>
         <a href="/landing?userId=<%= loggedInUserId %>&level=<%= loggedInLevel %>"
@@ -35,7 +55,7 @@
       <div class="col-sm-4">
         <input class="form-control"
                name="q"
-               placeholder="Search by participant, email, or title"
+               placeholder="<%= isManager ? 'Search by participant, email, or title' : 'Search by title or date' %>"
                value="<%= search || '' %>">
       </div>
       <div class="col-sm-auto">
@@ -50,7 +70,7 @@
         <div class="card-body">
           <form method="POST"
                 action="/milestones/add?userId=<%= loggedInUserId %>&level=<%= loggedInLevel %>"
-                class="row g-2">
+                class="row g-2 justify-content-center">
 
             <div class="col-md-4">
               <label class="form-label mb-1 small">Participant email</label>
@@ -77,10 +97,13 @@
                      class="form-control">
             </div>
 
-            <div class="col-md-1 d-grid align-items-end">
+            <div class="col-md-2 d-grid align-items-end">
               <button class="btn btn-dark mt-4" type="submit">Add</button>
             </div>
           </form>
+          <% if (error) { %>
+            <div class="alert alert-danger mt-3">no existing participant.</div>
+          <% } %>
         </div>
       </div>
     <% } %>
@@ -89,10 +112,12 @@
     <table class="table table-striped table-hover bg-white shadow-sm align-middle">
       <thead>
         <tr>
-          <th>Participant</th>
-          <th>Email</th>
+          <% if (isManager) { %>
+            <th>Participant</th>
+            <th>Email</th>
+          <% } %>
           <th>Title</th>
-          <th>Date achieved</th>
+          <th>Date</th>
           <% if (isManager) { %>
             <th style="width: 180px;">Actions</th>
           <% } %>
@@ -101,30 +126,34 @@
       <tbody>
         <% milestones.forEach(m => { %>
           <tr>
-            <td>
-              <% if (m.participant_last_name || m.participant_first_name) { %>
-                <%= (m.participant_last_name || '') %>, <%= (m.participant_first_name || '') %>
-              <% } else { %>
-                <span class="text-muted">Unknown</span>
-              <% } %>
-            </td>
-            <td><%= m.participant_email %></td>
+            <% if (isManager) { %>
+              <td>
+                <% if (m.participant_last_name || m.participant_first_name) { %>
+                  <%= (m.participant_last_name || '') %>, <%= (m.participant_first_name || '') %>
+                <% } else { %>
+                  <span class="text-muted">Unknown</span>
+                <% } %>
+              </td>
+              <td><%= m.participant_email %></td>
+            <% } %>
             <td><%= m.milestone_title %></td>
             <td><%= m.milestone_date || '' %></td>
 
             <% if (isManager) { %>
               <td>
-                <a class="btn btn-sm btn-outline-primary mb-1"
-                   href="/milestones/edit/<%= m.milestone_id %>?userId=<%= loggedInUserId %>&level=<%= loggedInLevel %>">
-                  Edit
-                </a>
+                <div class="d-flex gap-2 justify-content-start">
+                  <a class="btn btn-sm btn-outline-primary"
+                     href="/milestones/edit/<%= m.milestone_id %>?userId=<%= loggedInUserId %>&level=<%= loggedInLevel %>">
+                    Edit
+                  </a>
 
-                <form method="POST"
-                      action="/milestones/delete/<%= m.milestone_id %>?userId=<%= loggedInUserId %>&level=<%= loggedInLevel %>"
-                      onsubmit="return confirm('Delete this milestone?');"
-                      class="d-inline">
-                  <button class="btn btn-sm btn-outline-danger" type="submit">Delete</button>
-                </form>
+                  <form method="POST"
+                        action="/milestones/delete/<%= m.milestone_id %>?userId=<%= loggedInUserId %>&level=<%= loggedInLevel %>"
+                        onsubmit="return confirm('Delete this milestone?');"
+                        class="d-inline">
+                    <button class="btn btn-sm btn-outline-danger" type="submit">Delete</button>
+                  </form>
+                </div>
               </td>
             <% } %>
           </tr>
