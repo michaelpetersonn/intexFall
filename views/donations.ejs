@@ -42,7 +42,7 @@
       </div>
     </header>
 
-    <!-- ADD DONATION (MANAGER ONLY) -->
+    <!-- Add donation (MANAGER VIEW) -->
     <% if (loggedInLevel === 'M') { %>
       <div class="card mb-4">
         <div class="card-header">Add donation</div>
@@ -84,7 +84,7 @@
       </div>
     <% } %>
 
-    <!-- SEARCH -->
+    <!-- Search -->
     <form class="row g-2 mb-3" method="GET" action="/donations">
       <input type="hidden" name="userId" value="<%= loggedInUserId %>">
       <input type="hidden" name="level" value="<%= loggedInLevel %>">
@@ -99,7 +99,7 @@
       </div>
     </form>
 
-    <!-- TABLE -->
+    <!-- Table -->
     <table class="table table-striped table-hover bg-white shadow-sm">
       <thead>
         <tr>

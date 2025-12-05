@@ -1,5 +1,7 @@
-// Intex Fall
-// index.js - Ella Rises simple app
+// Carson Williams, Michael Hawkins, Michael Peterson
+// Intex Fall Node.js app 
+
+// index.js - Ella Rises app
 require('dotenv').config();
 const express = require('express');
 const db = require('./db');
@@ -32,7 +34,7 @@ function requireLogin(req, res, next) {
   req.level = level;
   next();
 }
-
+// Checking to see if manager is loged in 
 function isManager(level) {
   return level === 'M';
 }
@@ -43,7 +45,7 @@ function numberOrNull(value) {
   return Number.isNaN(num) ? null : num;
 }
 
-// Preserve user info when redirecting
+// Preserve the users info when redirecting
 function redirectWithUser(res, path, userId, level) {
   res.redirect(
     `${path}?userId=${encodeURIComponent(userId)}&level=${encodeURIComponent(
@@ -52,7 +54,7 @@ function redirectWithUser(res, path, userId, level) {
   );
 }
 
-// Helper to format 10-digit phone as xxx-xxx-xxxx
+// Helper to format phone number as xxx-xxx-xxxx
 app.locals.formatPhone = function (phone) {
   if (!phone) return '';
   const digits = String(phone).replace(/\D/g, '');
@@ -72,8 +74,10 @@ app.get('/login', (req, res) => {
 app.post('/login', async (req, res) => {
   const { username, password } = req.body; // email/login
 
+  // Bellow in the query since we switched from pool to knex we had to switch our 
+  // place holders from $1, $2, ect. to ?
   try {
-    const result = await db.query(
+    const result = await db.query( 
       `
       SELECT *
       FROM users
@@ -84,7 +88,7 @@ app.post('/login', async (req, res) => {
     );
 
     const rows = result.rows || [];
-
+// Error handling 
     if (rows.length === 0) {
       return res
         .status(401)
@@ -95,7 +99,7 @@ app.post('/login', async (req, res) => {
 
     const userId = user.participant_email;
     const level =
-      user.user_level || // from your schema
+      user.user_level || // from the schema
       user.level ||
       user.userrole ||
       'U';
@@ -181,7 +185,7 @@ app.get('/landing', async (req, res) => {
   }
 });
 
-// ---------- SITE USERS (MANAGER ONLY)----------------
+// ---------- User sites (MANAGER ONLY)----------------
 app.get('/users', requireLogin, async (req, res) => {
   const { userId, level } = req.query;
   if (!isManager(level)) {
@@ -206,7 +210,7 @@ app.get('/users', requireLogin, async (req, res) => {
   try {
     const result = await db.query(sql, params);
 
-    // 🔑 Normalize result to always be an array
+    // Normalize result to always be an array
     let rows;
     if (Array.isArray(result)) {
       rows = result;
@@ -246,13 +250,13 @@ app.post('/users/add', requireLogin, async (req, res) => {
   console.log('ADD USER body:', req.body);
 
   try {
-    // 1) Check if participant exists
+    // Check if participant exists
     const pResult = await db.query(
       'SELECT participant_email FROM participant WHERE participant_email = ?',
       [participant_email]
     );
 
-    // 🔑 Normalize participants array safely
+    //Normalize participants array 
     let participants;
     if (Array.isArray(pResult)) {
       participants = pResult;
@@ -290,7 +294,7 @@ app.post('/users/add', requireLogin, async (req, res) => {
       });
     }
 
-    // 2) Participant exists → insert into users
+    // Participant exists → insert into users
     await db.query(
       `
       INSERT INTO users (participant_email, password, user_level)
@@ -566,7 +570,7 @@ app.get('/participants/edit/:participant_email', requireLogin, async (req, res) 
   const { participant_email } = req.params;
 
   try {
-    const result = await db.query(
+    const result = await db.query(         // Reformat the dob
       `
       SELECT
         participant_email,
@@ -796,7 +800,7 @@ app.get('/events', async (req, res) => {
         hasPrev: page > 1,
       });
     } else if (userId) {
-      // Users see only their past event registrations
+      // Users see only their past event registrations and not the others records 
       let mySql = `
         SELECT r.event_instance_id,
                ei.event_name,

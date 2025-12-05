@@ -2,7 +2,7 @@
 require('dotenv').config();
 const knexLib = require('knex');
 
-const isRds = !!process.env.RDS_HOSTNAME; // true on Elastic Beanstalk
+const isRds = !!process.env.RDS_HOSTNAME; // true on Elastic Beanstalk aka the beans talking
 
 const knex = knexLib({
   client: 'pg',
@@ -13,7 +13,7 @@ const knex = knexLib({
     password: process.env.RDS_PASSWORD || 'MichaelMichaelCarson',
     database: process.env.RDS_DB_NAME || 'postgres',
 
-    // 👇 This is the important part
+    // This is the important part
     ssl: isRds
       ? { rejectUnauthorized: false }   // use SSL on AWS/RDS
       : false,                          // no SSL for local dev
