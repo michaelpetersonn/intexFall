@@ -5,6 +5,7 @@
 require('dotenv').config();
 const express = require('express');
 const db = require('./db');
+const crypto = require('crypto');
 
 const session = require('express-session');
 
@@ -23,6 +24,66 @@ app.use(
 );
 
 // ---------- Helpers ----------
+const HASH_PREFIX = 'pbkdf2';
+const HASH_ITERATIONS = 120000;
+const HASH_KEYLEN = 64;
+const HASH_DIGEST = 'sha512';
+
+function hashPassword(password) {
+  const salt = crypto.randomBytes(16).toString('hex');
+  const derived = crypto
+    .pbkdf2Sync(password, salt, HASH_ITERATIONS, HASH_KEYLEN, HASH_DIGEST)
+    .toString('hex');
+  return `${HASH_PREFIX}$${HASH_ITERATIONS}$${salt}$${derived}`;
+}
+
+function isHashedPassword(stored) {
+  return typeof stored === 'string' && stored.startsWith(`${HASH_PREFIX}$`);
+}
+
+function verifyPassword(plain, stored) {
+  if (!stored || typeof stored !== 'string') return false;
+
+  if (isHashedPassword(stored)) {
+    const parts = stored.split('$');
+    if (parts.length !== 4) return false;
+    const [, iterStr, salt, hash] = parts;
+    const iterations = Number(iterStr);
+    if (!iterations || !salt || !hash) return false;
+
+    const keylen = Buffer.from(hash, 'hex').length || HASH_KEYLEN;
+    const derived = crypto
+      .pbkdf2Sync(plain, salt, iterations, keylen, HASH_DIGEST)
+      .toString('hex');
+
+    try {
+      return crypto.timingSafeEqual(
+        Buffer.from(hash, 'hex'),
+        Buffer.from(derived, 'hex')
+      );
+    } catch (err) {
+      console.error('Hash compare error', err);
+      return false;
+    }
+  }
+
+  // Legacy plain-text fallback (lets us upgrade rows on next login)
+  return stored === plain;
+}
+
+async function upgradeLegacyPasswordIfNeeded(email, plain, stored) {
+  if (!email || isHashedPassword(stored)) return;
+  const hashed = hashPassword(plain);
+  try {
+    await db.query(
+      'UPDATE users SET password = ? WHERE participant_email = ?',
+      [hashed, email]
+    );
+  } catch (err) {
+    console.error('Failed to upgrade password for', email, err);
+  }
+}
+
 function requireLogin(req, res, next) {
   // Accept credentials from query string or session
   const userId = req.query.userId || req.session.userId;
@@ -79,23 +140,34 @@ app.post('/login', async (req, res) => {
   try {
     const result = await db.query( 
       `
-      SELECT *
+      SELECT participant_email, password, user_level
       FROM users
       WHERE participant_email = ?
-        AND password = ?
+      LIMIT 1
       `,
-      [username, password]
+      [username]
     );
 
-    const rows = result.rows || [];
+    const rows = Array.isArray(result)
+      ? result
+      : Array.isArray(result.rows)
+        ? result.rows
+        : [];
 // Error handling 
-    if (rows.length === 0) {
+    if (rows.length === 0 || !verifyPassword(password, rows[0].password)) {
       return res
         .status(401)
         .render('login', { error: 'Invalid email or password' });
     }
 
     const user = rows[0];
+
+    // Upgrade any legacy plain-text passwords to hashed on successful login
+    await upgradeLegacyPasswordIfNeeded(
+      user.participant_email,
+      password,
+      user.password
+    );
 
     const userId = user.participant_email;
     const level =
@@ -194,7 +266,7 @@ app.get('/users', requireLogin, async (req, res) => {
 
   const q = req.query.q;
   let sql = `
-    SELECT participant_email, password, user_level
+    SELECT participant_email, user_level
     FROM users
   `;
   const params = [];
@@ -247,6 +319,7 @@ app.post('/users/add', requireLogin, async (req, res) => {
   }
 
   const { participant_email, password, user_level } = req.body;
+  const hashedPassword = hashPassword(password);
   console.log('ADD USER body:', req.body);
 
   try {
@@ -273,7 +346,7 @@ app.post('/users/add', requireLogin, async (req, res) => {
 
       // Reload users list so the table still shows
       const uResult = await db.query(
-        'SELECT participant_email, password, user_level FROM users ORDER BY participant_email'
+        'SELECT participant_email, user_level FROM users ORDER BY participant_email'
       );
 
       let users;
@@ -300,7 +373,7 @@ app.post('/users/add', requireLogin, async (req, res) => {
       INSERT INTO users (participant_email, password, user_level)
       VALUES (?, ?, ?)
       `,
-      [participant_email, password, user_level]
+      [participant_email, hashedPassword, user_level]
     );
 
     redirectWithUser(res, '/users', userId, level);
@@ -310,7 +383,7 @@ app.post('/users/add', requireLogin, async (req, res) => {
     // Try to re-render Users page with a generic error
     try {
       const uResult = await db.query(
-        'SELECT participant_email, password, user_level FROM users ORDER BY participant_email'
+        'SELECT participant_email, user_level FROM users ORDER BY participant_email'
       );
 
       let users;
@@ -349,13 +422,22 @@ app.post('/users/edit/:participant_email', requireLogin, async (req, res) => {
   console.log('EDIT USER body:', req.body);
 
   try {
+    const updates = ['user_level = ?'];
+    const params = [user_level];
+
+    if (password && password.trim() !== '') {
+      updates.unshift('password = ?');
+      params.unshift(hashPassword(password));
+    }
+    params.push(participant_email);
+
     await db.query(
       `
       UPDATE users
-      SET password = ?, user_level = ?
+      SET ${updates.join(', ')}
       WHERE participant_email = ?
       `,
-      [password, user_level, participant_email]
+      params
     );
     redirectWithUser(res, '/users', userId, level);
   } catch (err) {
