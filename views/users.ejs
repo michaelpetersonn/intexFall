@@ -34,8 +34,7 @@
     </div>
     <div class="ms-lg-auto d-flex align-items-center gap-2 flex-wrap">
       <small class="me-2">Logged in as <strong><%= loggedInLevel === 'M' ? 'Manager' : loggedInUserId %></strong></small>
-      <a href="/landing?userId=<%= loggedInUserId %>&level=<%= loggedInLevel %>"
-         class="btn btn-outline-secondary btn-sm">
+      <a href="/landing" class="btn btn-outline-secondary btn-sm">
         Back to dashboard
       </a>
     </div>
@@ -53,7 +52,7 @@
     <div class="card-header">Add Portal User</div>
     <div class="card-body">
       <form method="POST"
-            action="/users/add?userId=<%= loggedInUserId %>&level=<%= loggedInLevel %>"
+            action="/users/add"
             class="row g-2">
 
         <div class="col-md-4">
@@ -82,8 +81,6 @@
   </div>
 
   <form class="row g-2 mb-3" method="GET" action="/users">
-    <input type="hidden" name="userId" value="<%= loggedInUserId %>">
-    <input type="hidden" name="level" value="<%= loggedInLevel %>">
 
     <div class="col-sm-4">
       <input class="form-control" name="q"
@@ -120,7 +117,7 @@
             <div class="d-flex align-items-center gap-2 flex-nowrap">
               <!-- Edit User -->
               <form method="POST"
-                    action="/users/edit/<%= u.participant_email %>?userId=<%= loggedInUserId %>&level=<%= loggedInLevel %>"
+                    action="/users/edit/<%= u.participant_email %>"
                     class="d-flex align-items-center gap-2 flex-nowrap">
                 <input name="password" type="password" class="form-control form-control-sm"
                        placeholder="********" autocomplete="new-password" style="min-width: 180px;">
@@ -135,7 +132,7 @@
 
               <!-- Delete User -->
               <form method="POST"
-                    action="/users/delete/<%= u.participant_email %>?userId=<%= loggedInUserId %>&level=<%= loggedInLevel %>"
+                    action="/users/delete/<%= u.participant_email %>"
                     onsubmit="return confirm('Delete this user?')"
                     class="d-inline">
                 <button class="btn btn-sm btn-outline-danger" type="submit">Delete</button>

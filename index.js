@@ -22,6 +22,15 @@ app.use(
     saveUninitialized: true,
   })
 );
+// Attach session user info to every request so we never trust querystring creds
+app.use((req, res, next) => {
+  req.userId = req.session?.userId || null;
+  req.level = req.session?.level || null;
+  // Strip any spoofed creds from query params; session is the source of truth
+  if ('userId' in req.query) delete req.query.userId;
+  if ('level' in req.query) delete req.query.level;
+  next();
+});
 
 // ---------- Helpers ----------
 const HASH_PREFIX = 'pbkdf2';
@@ -85,14 +94,15 @@ async function upgradeLegacyPasswordIfNeeded(email, plain, stored) {
 }
 
 function requireLogin(req, res, next) {
-  // Accept credentials from query string or session
-  const userId = req.query.userId || req.session.userId;
-  const level = req.query.level || req.session.level;
+  const userId = req.userId;
+  const level = req.level;
   if (!userId || !level) {
     return res.redirect('/login');
   }
   req.userId = userId;
   req.level = level;
+  req.query.userId = userId;
+  req.query.level = level;
   next();
 }
 // Checking to see if manager is loged in 
@@ -108,11 +118,7 @@ function numberOrNull(value) {
 
 // Preserve the users info when redirecting
 function redirectWithUser(res, path, userId, level) {
-  res.redirect(
-    `${path}?userId=${encodeURIComponent(userId)}&level=${encodeURIComponent(
-      level
-    )}`
-  );
+  res.redirect(path);
 }
 
 // Helper to format phone number as xxx-xxx-xxxx
@@ -180,9 +186,7 @@ app.post('/login', async (req, res) => {
     req.session.userId = userId;
     req.session.level = level;
 
-    res.redirect(
-      `/landing?userId=${encodeURIComponent(userId)}&level=${level}`
-    );
+    res.redirect('/landing');
   } catch (err) {
     console.error('Login error:', err);
     res.status(500).render('login', { error: 'Server error' });
@@ -226,8 +230,8 @@ app.get('/logout', (req, res) => {
 
 app.get('/landing', async (req, res) => {
   // Prefer query params; fall back to session
-  const userId = req.query.userId || req.session.userId || null;
-  const level = req.query.level || req.session.level || null;
+  const userId = req.userId;
+  const level = req.level;
 
   try {
     const [participants, events, donations, surveys] = await Promise.all([
@@ -259,7 +263,7 @@ app.get('/landing', async (req, res) => {
 
 // ---------- User sites (MANAGER ONLY)----------------
 app.get('/users', requireLogin, async (req, res) => {
-  const { userId, level } = req.query;
+  const { userId, level } = req;
   if (!isManager(level)) {
     return res.status(403).send('Only managers can manage website users.');
   }
@@ -313,7 +317,7 @@ app.get('/users', requireLogin, async (req, res) => {
 
 // Add user – manager only
 app.post('/users/add', requireLogin, async (req, res) => {
-  const { userId, level } = req.query;
+  const { userId, level } = req;
   if (!isManager(level)) {
     return res.status(403).send('Only managers can add website users.');
   }
@@ -411,7 +415,7 @@ app.post('/users/add', requireLogin, async (req, res) => {
 
 // Edit user – manager only (email is the key)
 app.post('/users/edit/:participant_email', requireLogin, async (req, res) => {
-  const { userId, level } = req.query;
+  const { userId, level } = req;
   if (!isManager(level)) {
     return res.status(403).send('Only managers can edit website users.');
   }
@@ -448,7 +452,7 @@ app.post('/users/edit/:participant_email', requireLogin, async (req, res) => {
 
 // Delete user – manager only
 app.post('/users/delete/:participant_email', requireLogin, async (req, res) => {
-  const { userId, level } = req.query;
+  const { userId, level } = req;
   if (!isManager(level)) {
     return res.status(403).send('Only managers can delete website users.');
   }
@@ -471,8 +475,8 @@ app.post('/users/delete/:participant_email', requireLogin, async (req, res) => {
 // ---------- Participants ----------
 // participant(participant_email, participant_first_name, participant_last_name, ...)
 app.get('/participants', async (req, res) => {
-  const userId = req.query.userId || req.session.userId || null;
-  const level = req.query.level || req.session.level || null; // 'M', 'U', or null (visitor)
+  const userId = req.userId;
+  const level = req.level; // 'M', 'U', or null (visitor)
   const q = req.query.q;
   const page = Math.max(1, parseInt(req.query.page || '1', 10));
   const limit = 20;
@@ -573,7 +577,7 @@ app.get('/participants', async (req, res) => {
 
 // ---------- NEW PARTICIPANT FORM (GET) ----------
 app.get('/participants/new', requireLogin, (req, res) => {
-  const { userId, level } = req.query;
+  const { userId, level } = req;
   if (!isManager(level)) {
     return res.status(403).send('Only managers can add participants.');
   }
@@ -586,7 +590,7 @@ app.get('/participants/new', requireLogin, (req, res) => {
 
 // ---------- ADD PARTICIPANT (POST) ----------
 app.post('/participants/add', requireLogin, async (req, res) => {
-  const { userId, level } = req.query;
+  const { userId, level } = req;
   if (!isManager(level)) return res.status(403).send('Only managers can add participants.');
 
   const {
@@ -644,7 +648,7 @@ app.post('/participants/add', requireLogin, async (req, res) => {
 
 // ---------- EDIT PARTICIPANT FORM (GET) ----------
 app.get('/participants/edit/:participant_email', requireLogin, async (req, res) => {
-  const { userId, level } = req.query;
+  const { userId, level } = req;
   if (!isManager(level)) {
     return res.status(403).send('Only managers can edit participants.');
   }
@@ -714,7 +718,7 @@ app.get('/participants/edit/:participant_email', requireLogin, async (req, res) 
 
 // ---------- EDIT PARTICIPANT (POST) ----------
 app.post('/participants/edit/:participant_email', requireLogin, async (req, res) => {
-  const { userId, level } = req.query;
+  const { userId, level } = req;
   if (!isManager(level)) return res.status(403).send('Only managers can edit participants.');
 
   const { participant_email } = req.params;
@@ -770,7 +774,7 @@ app.post('/participants/edit/:participant_email', requireLogin, async (req, res)
 
 // ---------- DELETE PARTICIPANT ----------
 app.post('/participants/delete/:participant_email', requireLogin, async (req, res) => {
-  const { userId, level } = req.query;
+  const { userId, level } = req;
   if (!isManager(level)) return res.status(403).send('Only managers can delete participants.');
 
   const { participant_email } = req.params;
@@ -948,7 +952,7 @@ app.get('/events', async (req, res) => {
 
 // Add event – manager only
 app.post('/events/add', requireLogin, async (req, res) => {
-  const { userId, level } = req.query;
+  const { userId, level } = req;
   if (!isManager(level))
     return res.status(403).send('Only managers can add events.');
 
@@ -982,7 +986,7 @@ app.post('/events/add', requireLogin, async (req, res) => {
 
 // Edit event – manager only (identified by event_name)
 app.post('/events/edit/:event_name', requireLogin, async (req, res) => {
-  const { userId, level } = req.query;
+  const { userId, level } = req;
   if (!isManager(level))
     return res.status(403).send('Only managers can edit events.');
 
@@ -1019,7 +1023,7 @@ app.post('/events/edit/:event_name', requireLogin, async (req, res) => {
 
 // Delete event – manager only
 app.post('/events/delete/:event_name', requireLogin, async (req, res) => {
-  const { userId, level } = req.query;
+  const { userId, level } = req;
   if (!isManager(level))
     return res.status(403).send('Only managers can delete events.');
 
@@ -1126,7 +1130,7 @@ app.post('/events/:eventInstanceId/signup', requireLogin, async (req, res) => {
 
 // Manager: edit event instance
 app.get('/event_instances/edit/:eventInstanceId', requireLogin, async (req, res) => {
-  const { userId, level } = req.query;
+  const { userId, level } = req;
   if (!isManager(level))
     return res.status(403).send('Only managers can edit event instances.');
 
@@ -1168,7 +1172,7 @@ app.get('/event_instances/edit/:eventInstanceId', requireLogin, async (req, res)
 });
 
 app.post('/event_instances/edit/:eventInstanceId', requireLogin, async (req, res) => {
-  const { userId, level } = req.query;
+  const { userId, level } = req;
   if (!isManager(level))
     return res.status(403).send('Only managers can edit event instances.');
 
@@ -1208,7 +1212,7 @@ app.post('/event_instances/edit/:eventInstanceId', requireLogin, async (req, res
 
 // Manager: delete event instance
 app.post('/event_instances/delete/:eventInstanceId', requireLogin, async (req, res) => {
-  const { userId, level } = req.query;
+  const { userId, level } = req;
   if (!isManager(level))
     return res.status(403).send('Only managers can delete event instances.');
 
@@ -1792,7 +1796,7 @@ app.post('/milestones/add', requireLogin, async (req, res) => {
 
 // GET edit milestone – manager only
 app.get('/milestones/edit/:milestone_id', requireLogin, async (req, res) => {
-  const { userId, level } = req.query;
+  const { userId, level } = req;
   if (!isManager(level)) {
     return res.status(403).send('Only managers can edit milestones.');
   }
@@ -1839,7 +1843,7 @@ app.get('/milestones/edit/:milestone_id', requireLogin, async (req, res) => {
 
 // POST edit milestone – manager only
 app.post('/milestones/edit/:milestone_id', requireLogin, async (req, res) => {
-  const { userId, level } = req.query;
+  const { userId, level } = req;
   if (!isManager(level)) {
     return res.status(403).send('Only managers can edit milestones.');
   }
@@ -1867,7 +1871,7 @@ app.post('/milestones/edit/:milestone_id', requireLogin, async (req, res) => {
 
 // Delete milestone – manager only
 app.post('/milestones/delete/:milestone_id', requireLogin, async (req, res) => {
-  const { userId, level } = req.query;
+  const { userId, level } = req;
   if (!isManager(level)) {
     return res.status(403).send('Only managers can delete milestones.');
   }
@@ -2009,7 +2013,7 @@ app.get('/donations', async (req, res) => {
 
 // Add donation – manager only
 app.post('/donations/add', requireLogin, async (req, res) => {
-  const { userId, level } = req.query;
+  const { userId, level } = req;
   if (!isManager(level))
     return res.status(403).send('Only managers can add donations.');
 
@@ -2070,7 +2074,7 @@ app.post('/donations/add', requireLogin, async (req, res) => {
 
 // Edit donation – manager only (edit amount only)
 app.post('/donations/edit/:donation_id', requireLogin, async (req, res) => {
-  const { userId, level } = req.query;
+  const { userId, level } = req;
   if (!isManager(level))
     return res.status(403).send('Only managers can edit donations.');
 
@@ -2091,7 +2095,7 @@ app.post('/donations/edit/:donation_id', requireLogin, async (req, res) => {
 
 // Delete donation – manager only
 app.post('/donations/delete/:donation_id', requireLogin, async (req, res) => {
-  const { userId, level } = req.query;
+  const { userId, level } = req;
   if (!isManager(level))
     return res.status(403).send('Only managers can delete donations.');
 
